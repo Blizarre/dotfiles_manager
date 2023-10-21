@@ -7,6 +7,10 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.4.6", features = ["derive"] }
+diffy = "0.3.0"
+filetime = "0.2.22"
 home = "0.5.5"
+rust-s3 = { version = "0.33.0", features = ["blocking"] }
 serde = { version = "1.0.189", features = ["derive"] }
+time = { version = "0.3.30", features = ["parsing"] }
 toml = { version = "0.8.2", features = ["parse"] }

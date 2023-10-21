@@ -48,16 +48,25 @@ impl From<toml::de::Error> for ConfigLoadError {
 
 impl Config {
     pub fn load(config_file_path: &Path) -> Result<Config, ConfigLoadError> {
-        println!("Loading config from {:?}", config_file_path);
-        if !config_file_path.exists() {
-            let mut file = File::create(config_file_path.clone())?;
-            let default_content = toml::to_string(&Config::default())?;
-            file.write_all(default_content.as_bytes())?;
+        if config_file_path.exists() {
+            println!("Loading config from {:?}", config_file_path);
+            let config_data = File::open(config_file_path).and_then(|mut file| {
+                let mut content = String::new();
+                file.read_to_string(&mut content).map(|_| content)
+            })?;
+            Ok(toml::from_str(&config_data)?)
+        } else {
+            println!("Creating config file in {:?}", config_file_path);
+            let config = Config::default();
+            config.save(config_file_path)?;
+            Ok(config)
         }
-        let config_data = File::open(config_file_path).and_then(|mut file| {
-            let mut content = String::new();
-            file.read_to_string(&mut content).map(|_| content)
-        })?;
-        Ok(toml::from_str(&config_data)?)
+    }
+
+    pub fn save(&self, config_file_path: &Path) -> Result<(), ConfigLoadError> {
+        let mut file = File::create(config_file_path.clone())?;
+        let default_content = toml::to_string(&self)?;
+        file.write_all(default_content.as_bytes())?;
+        Ok(())
     }
 }
