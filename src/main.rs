@@ -40,6 +40,8 @@ enum Commands {
     Configure {
         /// Target bucket to store the dotfiles
         bucket: String,
+        /// Optional aws profile to use to connect to the bucket. If not defined will use environment variables and default to anonymous.
+        profile: Option<String>,
     },
     Sync,
 }
@@ -57,9 +59,10 @@ fn main() {
         .expect("Error loading the configuration file");
 
     match args.command {
-        Commands::Configure { bucket } => {
+        Commands::Configure { bucket, profile } => {
             let mut new_config = config;
             new_config.remote = bucket;
+            new_config.remote_profile = profile;
             new_config
                 .save(config_file_path.as_path())
                 .expect("Unable to update the configuration file");
@@ -70,17 +73,25 @@ fn main() {
 }
 
 fn sync(root_dir: &Path, config: config::Config) {
-    let region = "us-east-1".parse().unwrap();
-    let credentials = Credentials::default().unwrap();
+    let region = "eu-west-2".parse().unwrap();
+
+    // Fetch credentials in that order:
+    // - from the environment variables
+    // - IF NOT FOUND OR INVALID: see if we defined a
+    let credentials = if let Ok(credentials) = Credentials::from_env() {
+        credentials
+    } else if let Some(profile_name) = config.remote_profile {
+        Credentials::from_profile(Some(&profile_name))
+    } else {
+        Credentials::anonymous()
+    }
+    .expect("Impossible to find credentials");
 
     let bucket =
         Bucket::new(&config.remote, region, credentials).expect("Error when loading the bucket");
-
     println!("Listing files from {}", config.remote);
 
-    let files = bucket
-        .list_blocking("".to_string(), Some("/".to_string()))
-        .expect("Can't list");
+    let files = bucket.list("".to_string(), Some("/".to_string())).unwrap();
 
     for file in files {
         for f in file.contents {
@@ -90,9 +101,7 @@ fn sync(root_dir: &Path, config: config::Config) {
                 .expect("Error parsing aws s3 header");
 
             let local = root_dir.join(Path::new(&f.key));
-            let object = bucket
-                .get_object_blocking(f.key)
-                .expect("Could not retrieve file");
+            let object = bucket.get_object(f.key).expect("Could not retrieve file");
 
             if local.exists() {
                 println!("Found a local version");
@@ -141,7 +150,7 @@ fn sync(root_dir: &Path, config: config::Config) {
 fn upload_local_file(p: &Path, bucket: &Bucket) {
     let data = std::fs::read(p).expect("Error reading file to upload");
     bucket
-        .put_object_blocking(p.to_str().expect("Invalid"), &data)
+        .put_object(p.to_str().expect("Invalid"), &data)
         .expect("Error uploading file to S3");
 }
 

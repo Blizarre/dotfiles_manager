@@ -10,6 +10,8 @@ use std::{
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
     pub remote: String,
+    pub remote_profile: Option<String>,
+    pub anonymous: Option<bool>,
     pub ignore: Vec<String>,
 }
 
