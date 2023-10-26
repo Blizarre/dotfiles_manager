@@ -11,7 +11,8 @@ use std::{
 pub struct Config {
     pub remote: String,
     pub remote_profile: Option<String>,
-    pub anonymous: Option<bool>,
+    pub remote_region: Option<String>,
+    pub remote_endpoint: Option<String>,
     pub ignore: Vec<String>,
 }
 

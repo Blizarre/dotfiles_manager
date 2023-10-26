@@ -1,8 +1,10 @@
 use clap::{Parser, Subcommand};
+
+use config::Config;
 use filetime::{self, set_file_times, FileTime};
 use home::home_dir;
-use s3::{self, creds::Credentials, Bucket};
-
+use path_absolutize::Absolutize;
+use s3::{self, error::S3Error, Bucket};
 use std::{
     io::Write,
     path::{Path, PathBuf},
@@ -13,7 +15,10 @@ use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 
 use diffy::{self, PatchFormatter};
 
+use crate::connection::ConnectionInfo;
+
 mod config;
+mod connection;
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -34,14 +39,23 @@ struct Args {
 enum Commands {
     /// Add a new dotfile
     Track {
+        /// Local filename
         file_name: PathBuf,
+        /// Target file on the remote
+        target: Option<String>,
     },
     /// Configure the Repository
     Configure {
         /// Target bucket to store the dotfiles
         bucket: String,
+        /// AWS Region where the bucket is located
+        region: Option<String>,
         /// Optional aws profile to use to connect to the bucket. If not defined will use environment variables and default to anonymous.
+        #[arg(long)]
         profile: Option<String>,
+        /// Optional S3 url of the remote endpoint to use to communicate with the bucket. This will override the region
+        #[arg(long)]
+        endpoint: Option<String>,
     },
     Sync,
 }
@@ -59,49 +73,88 @@ fn main() {
         .expect("Error loading the configuration file");
 
     match args.command {
-        Commands::Configure { bucket, profile } => {
-            let mut new_config = config;
-            new_config.remote = bucket;
-            new_config.remote_profile = profile;
-            new_config
+        Commands::Configure {
+            bucket,
+            region,
+            profile,
+            endpoint,
+        } => {
+            let mut config = Config::default();
+            config.remote = bucket;
+            config.remote_profile = profile.or(config.remote_profile);
+            config.remote_region = region.or(config.remote_region);
+            config.remote_endpoint = endpoint.or(config.remote_endpoint);
+            config
                 .save(config_file_path.as_path())
                 .expect("Unable to update the configuration file");
         }
         Commands::Sync => sync(home_path.as_path(), config),
-        _ => {}
+        Commands::Track { file_name, target } => {
+            track(file_name.as_path(), &home_path, target, config)
+        }
     }
 }
 
-fn sync(root_dir: &Path, config: config::Config) {
-    let region = "eu-west-2".parse().unwrap();
+fn track(file_path: &Path, root_path: &Path, remote_path: Option<String>, config: config::Config) {
+    let connection_info = ConnectionInfo::new(config).expect("Error fetching credentials");
+    let file_path = file_path.absolutize().expect("error file path");
 
-    // Fetch credentials in that order:
-    // - from the environment variables
-    // - IF NOT FOUND OR INVALID: see if we defined a
-    let credentials = if let Ok(credentials) = Credentials::from_env() {
-        credentials
-    } else if let Some(profile_name) = config.remote_profile {
-        Credentials::from_profile(Some(&profile_name))
-    } else {
-        Credentials::anonymous()
+    let bucket = Bucket::new(
+        &connection_info.bucket_name,
+        connection_info.region,
+        connection_info.credentials,
+    )
+    .expect("Error when loading the remote bucket");
+
+    if let Some(remote_path) = remote_path {
+        upload_local_file(&file_path, &remote_path, &bucket).expect("Error uploading the file");
+        return;
     }
-    .expect("Impossible to find credentials");
 
-    let bucket =
-        Bucket::new(&config.remote, region, credentials).expect("Error when loading the bucket");
-    println!("Listing files from {}", config.remote);
+    let file_path = file_path.absolutize().expect("error file path");
+    let root_path = Path::new(&root_path)
+        .absolutize()
+        .expect("error remote path");
+    if !file_path.starts_with(&root_path) {
+        println!("Error, the file is not inside the root path");
+        return;
+    }
 
-    let files = bucket.list("".to_string(), Some("/".to_string())).unwrap();
+    let remote_path = file_path
+        .strip_prefix(root_path)
+        .expect("Cannot remove prefix");
 
-    for file in files {
-        for f in file.contents {
-            println!("< {}, {}", f.key, f.last_modified);
+    upload_local_file(
+        &file_path,
+        remote_path.to_str().expect("Invalid remote path"),
+        &bucket,
+    )
+    .expect("Error uploading the file");
+}
 
-            let last_modified_s3 = OffsetDateTime::parse(&f.last_modified, &Rfc3339)
+fn sync(root_dir: &Path, config: config::Config) {
+    let connection_info = ConnectionInfo::new(config).expect("Error fetching credentials");
+    let bucket = Bucket::new(
+        &connection_info.bucket_name,
+        connection_info.region,
+        connection_info.credentials,
+    )
+    .expect("Error when loading the remote bucket");
+    println!("Listing files from {}", connection_info.bucket_name);
+
+    let results = bucket.list("".to_string(), Some("/".to_string())).unwrap();
+
+    for result in results {
+        for file in result.contents {
+            println!("< {}, {}", file.key, file.last_modified);
+
+            let last_modified_s3 = OffsetDateTime::parse(&file.last_modified, &Rfc3339)
                 .expect("Error parsing aws s3 header");
 
-            let local = root_dir.join(Path::new(&f.key));
-            let object = bucket.get_object(f.key).expect("Could not retrieve file");
+            let local = root_dir.join(Path::new(&file.key));
+            let object = bucket
+                .get_object(&file.key)
+                .expect("Could not retrieve file");
 
             if local.exists() {
                 println!("Found a local version");
@@ -121,14 +174,15 @@ fn sync(root_dir: &Path, config: config::Config) {
                 if patch.hunks().is_empty() {
                     println!("Identical content, skipping");
                 } else {
-                    let f = PatchFormatter::new().with_color();
+                    let patch_fmt = PatchFormatter::new().with_color();
                     println!(
                         "Original is local, Modified is remote:\n{}",
-                        f.fmt_patch(&patch)
+                        patch_fmt.fmt_patch(&patch)
                     );
                     let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
                     match response.as_str() {
-                        "u" => upload_local_file(&local, &bucket),
+                        "u" => upload_local_file(&local, &file.key, &bucket)
+                            .expect("Error uploading file"),
                         "o" => replace_local_file(
                             &local,
                             object.bytes(),
@@ -147,11 +201,15 @@ fn sync(root_dir: &Path, config: config::Config) {
     }
 }
 
-fn upload_local_file(p: &Path, bucket: &Bucket) {
-    let data = std::fs::read(p).expect("Error reading file to upload");
-    bucket
-        .put_object(p.to_str().expect("Invalid"), &data)
-        .expect("Error uploading file to S3");
+fn upload_local_file(file_path: &Path, bucket_key: &str, _bucket: &Bucket) -> Result<(), S3Error> {
+    println!(
+        "Uploading {} to {}",
+        file_path.to_str().expect("ASTRING"),
+        bucket_key
+    );
+    //    let data = std::fs::read(file_path).expect("Error reading file to upload");
+    //    bucket.put_object(bucket_key, &data).map(|_| {})
+    Ok(())
 }
 
 fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) {
