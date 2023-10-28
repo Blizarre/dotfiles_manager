@@ -71,7 +71,7 @@ pub fn get_region(
     Region::from_default_env().or_else(|_| {
         if let Some(remote_endpoint) = remote_endpoint {
             Ok(Region::Custom {
-                region: remote_region.unwrap_or(String::new()),
+                region: remote_region.unwrap_or_default(),
                 endpoint: remote_endpoint,
             })
         } else if let Some(remote_region) = remote_region {

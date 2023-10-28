@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use log::{debug};
+use log::debug;
 use serde::{self, Deserialize, Serialize};
 use std::{
     fs::File,
@@ -34,7 +34,7 @@ impl Config {
     }
 
     pub fn save(&self, config_file_path: &Path) -> Result<()> {
-        let mut file = File::create(config_file_path.clone())?;
+        let mut file = File::create(config_file_path)?;
         let default_content = toml::to_string(&self)?;
         file.write_all(default_content.as_bytes())?;
         Ok(())
