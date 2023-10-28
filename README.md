@@ -12,7 +12,7 @@ A small program to manage my dotfiles and keep them in sync between all my compu
 - Basic conflict reconciliation by printing diffs
 - CI pipeline to autogenerate windows / mac / linux binaries
 
-*It is currently only a prototype that I use to sketch the necessary features*. It is definitely not ready yet:
+**It is currently only a prototype that I use to sketch the necessary features**. It is definitely not ready yet:
 - Need to move to async to handle more files (will currently check them sequentially)
 - See if I can avoid downloading the files to check for diffs (remote md5? manifest)
 - Major refactoring to clean it up
@@ -20,6 +20,7 @@ A small program to manage my dotfiles and keep them in sync between all my compu
 - Unit tests
 - implement file upload
 - clean up the config file, pick one name for the remote
+- Add github workflow to generate production artifacts
 
 ## How to build statically
 
