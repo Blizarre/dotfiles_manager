@@ -22,6 +22,8 @@ jobs:
       run: cargo clippy
     - name: Check format
       run: cargo fmt --check
+    - name: Install musl-tools
+      run: sudo apt update && sudo apt install musl-tools
     - name: Add the musl target build pipeline
       run: rustup target add x86_64-unknown-linux-musl
     - name: Build in release mode
