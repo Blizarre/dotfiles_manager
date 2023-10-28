@@ -4,10 +4,11 @@ use config::Config;
 use filetime::{self, set_file_times, FileTime};
 use home::home_dir;
 use path_absolutize::Absolutize;
-use s3::{self, error::S3Error, Bucket};
+use s3::{self, Bucket};
 use std::{
     io::Write,
     path::{Path, PathBuf},
+    str::FromStr,
     time::SystemTime,
 };
 
@@ -19,6 +20,8 @@ use crate::connection::ConnectionInfo;
 
 mod config;
 mod connection;
+
+use anyhow::{bail, Context, Error, Result};
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -56,120 +59,148 @@ enum Commands {
         /// Optional S3 url of the remote endpoint to use to communicate with the bucket. This will override the region
         #[arg(long)]
         endpoint: Option<String>,
+        /// Root directory on the disk that will be matched with the remote. Default is the home directory
+        root_dir: Option<String>,
     },
     Sync,
 }
 
-fn main() {
+fn main() -> Result<()> {
     let args = Args::parse();
+    let config_file_path = args
+        .config_file.as_ref()
+        .map_or_else(|| {
+            let mut dir = home_dir().context("Unable to find the home directory to get the config file. You can provide the config file as argument with --config-file-path")?;
+            dir.push(".dots");
+            Ok::<PathBuf, Error>(dir.to_owned())
+        }, |p| Ok(p.to_owned())
+    )?;
+    let config_file_path = config_file_path.as_path();
 
-    let home_path = home_dir().expect("Unable to find the home directory");
-    let config_file_path = args.config_file.unwrap_or_else(|| {
-        let mut config_path = home_path.clone();
-        config_path.push(".dots");
-        config_path
-    });
-    let config = config::Config::load(config_file_path.as_path())
-        .expect("Error loading the configuration file");
+    let config = config::Config::load(config_file_path)?;
 
-    match args.command {
+    let root_dir = config.root_dir.as_ref()
+        .map_or_else(
+            || home_dir()
+                .context("Unable to find the home directory to use as the root directory. You can set the root directory explicitly in the config file"),
+            |p| Ok(PathBuf::from_str(p)?),
+        )?;
+    let root_dir = &root_dir.as_path();
+
+    let result = match &args.command {
         Commands::Configure {
+            root_dir,
             bucket,
             region,
             profile,
             endpoint,
         } => {
             let mut config = Config::default();
-            config.remote = bucket;
-            config.remote_profile = profile.or(config.remote_profile);
-            config.remote_region = region.or(config.remote_region);
-            config.remote_endpoint = endpoint.or(config.remote_endpoint);
+            config.root_dir = root_dir.clone();
+            config.remote = bucket.clone();
+            config.remote_profile = profile.clone().or(config.remote_profile);
+            config.remote_region = region.clone().or(config.remote_region);
+            config.remote_endpoint = endpoint.clone().or(config.remote_endpoint);
             config
-                .save(config_file_path.as_path())
-                .expect("Unable to update the configuration file");
+                .save(config_file_path)
+                .context("Error saving the config file")
         }
-        Commands::Sync => sync(home_path.as_path(), config),
+        Commands::Sync => sync(root_dir, &config),
         Commands::Track { file_name, target } => {
-            track(file_name.as_path(), &home_path, target, config)
+            track(file_name.as_path(), root_dir, target.clone(), &config)
         }
-    }
+    };
+    result
 }
 
-fn track(file_path: &Path, root_path: &Path, remote_path: Option<String>, config: config::Config) {
-    let connection_info = ConnectionInfo::new(config).expect("Error fetching credentials");
-    let file_path = file_path.absolutize().expect("error file path");
+fn track(
+    file_path: &Path,
+    root_dir: &Path,
+    remote_path: Option<String>,
+    config: &config::Config,
+) -> Result<()> {
+    let connection_info = ConnectionInfo::new(config)?;
+    let file_path = file_path
+        .absolutize()
+        .context("Could not find the absolute location of the input file")?;
+
+    let root_path = Path::new(&root_dir)
+        .absolutize()
+        .context("Could not find the absolute location of the root path")?;
 
     let bucket = Bucket::new(
         &connection_info.bucket_name,
         connection_info.region,
         connection_info.credentials,
     )
-    .expect("Error when loading the remote bucket");
+    .context("Error when loading the remote bucket")?;
 
     if let Some(remote_path) = remote_path {
-        upload_local_file(&file_path, &remote_path, &bucket).expect("Error uploading the file");
-        return;
+        return upload_local_file(&file_path, &remote_path, &bucket);
     }
 
-    let file_path = file_path.absolutize().expect("error file path");
-    let root_path = Path::new(&root_path)
-        .absolutize()
-        .expect("error remote path");
     if !file_path.starts_with(&root_path) {
-        println!("Error, the file is not inside the root path");
-        return;
+        bail!(
+            "Error, the file {} is not inside the root path {}",
+            file_path.to_string_lossy(),
+            root_path.to_string_lossy()
+        );
     }
 
     let remote_path = file_path
         .strip_prefix(root_path)
-        .expect("Cannot remove prefix");
+        .context("Error when trying to generate the path in the S3 bucket")?;
 
     upload_local_file(
         &file_path,
-        remote_path.to_str().expect("Invalid remote path"),
+        remote_path.to_str().context("Invalid remote path")?,
         &bucket,
     )
-    .expect("Error uploading the file");
 }
 
-fn sync(root_dir: &Path, config: config::Config) {
-    let connection_info = ConnectionInfo::new(config).expect("Error fetching credentials");
+fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
+    let connection_info = ConnectionInfo::new(config)?;
     let bucket = Bucket::new(
         &connection_info.bucket_name,
         connection_info.region,
         connection_info.credentials,
     )
-    .expect("Error when loading the remote bucket");
+    .context("Error when loading the remote bucket")?;
     println!("Listing files from {}", connection_info.bucket_name);
 
-    let results = bucket.list("".to_string(), Some("/".to_string())).unwrap();
+    let results = bucket
+        .list("".to_string(), Some("/".to_string()))
+        .context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
 
     for result in results {
         for file in result.contents {
-            println!("< {}, {}", file.key, file.last_modified);
+            println!("Remote: {}, {}", file.key, file.last_modified);
 
             let last_modified_s3 = OffsetDateTime::parse(&file.last_modified, &Rfc3339)
-                .expect("Error parsing aws s3 header");
+                .context("Error parsing the file modification date from the aws s3 header")?;
 
             let local = root_dir.join(Path::new(&file.key));
             let object = bucket
                 .get_object(&file.key)
-                .expect("Could not retrieve file");
+                .with_context(|| format!("Could not retrieve file {} from S3", &file.key))?;
 
             if local.exists() {
-                println!("Found a local version");
-                let metadata =
-                    std::fs::metadata(&local).expect("Could not get metadata for local file");
-                let last_modified_local =
-                    OffsetDateTime::from(metadata.modified().expect("Could not read datetime"));
+                println!("Found matching local file: {}", local.to_string_lossy());
+                let metadata = std::fs::metadata(&local)
+                    .context("Could not get metadata for the local file")?;
+                let last_modified_local = OffsetDateTime::from(
+                    metadata
+                        .modified()
+                        .context("Could not read modification time for the local file")?,
+                );
                 println!(
                     "Conflict: Local file: {}, Remote file: {}",
                     last_modified_local, last_modified_s3
                 );
-                let local_content =
-                    std::fs::read_to_string(&local).expect("Cannot read local content");
-                let content_s3 =
-                    &String::from_utf8(object.bytes().to_vec()).expect("Error parsing file");
+                let local_content = std::fs::read_to_string(&local)
+                    .context("Error reading the content of the local file")?;
+                let content_s3 = &String::from_utf8(object.bytes().to_vec())
+                    .context("The remote file is not a text file")?;
                 let patch = diffy::create_patch(&local_content, content_s3);
                 if patch.hunks().is_empty() {
                     println!("Identical content, skipping");
@@ -181,42 +212,42 @@ fn sync(root_dir: &Path, config: config::Config) {
                     );
                     let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
                     match response.as_str() {
-                        "u" => upload_local_file(&local, &file.key, &bucket)
-                            .expect("Error uploading file"),
+                        "u" => upload_local_file(&local, &file.key, &bucket)?,
                         "o" => replace_local_file(
                             &local,
                             object.bytes(),
                             SystemTime::from(last_modified_s3),
-                        ),
+                        )?,
                         "s" => continue,
-                        "e" => return,
+                        "e" => return Ok(()),
                         _ => println!("Unsupported at the moment"),
                     }
                 }
             } else {
                 println!("local version missing, retrieving");
-                replace_local_file(&local, object.bytes(), SystemTime::from(last_modified_s3));
+                replace_local_file(&local, object.bytes(), SystemTime::from(last_modified_s3))?;
             }
         }
     }
+    Ok(())
 }
 
-fn upload_local_file(file_path: &Path, bucket_key: &str, _bucket: &Bucket) -> Result<(), S3Error> {
+fn upload_local_file(file_path: &Path, bucket_key: &str, _bucket: &Bucket) -> Result<()> {
     println!(
         "Uploading {} to {}",
-        file_path.to_str().expect("ASTRING"),
+        file_path.to_string_lossy(),
         bucket_key
     );
-    //    let data = std::fs::read(file_path).expect("Error reading file to upload");
+    //    let data = std::fs::read(file_path).context("Error reading file to upload");
     //    bucket.put_object(bucket_key, &data).map(|_| {})
     Ok(())
 }
 
-fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) {
-    std::fs::write(path, content).expect("Could not write file to disk");
+fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) -> Result<()> {
+    std::fs::write(path, content).context("Error updating the local file")?;
     let last_modified_s3 = FileTime::from_system_time(modified_time);
     set_file_times(path, last_modified_s3, last_modified_s3)
-        .expect("Error when updating the time for the downloaded file")
+        .context("Error when updating the time for the downloaded file")
 }
 
 fn ask_user(prompt: &str, accepted_values: Vec<&str>) -> String {

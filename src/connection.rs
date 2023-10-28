@@ -1,7 +1,6 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
-    result::Result::Err,
     str::FromStr,
 };
 
@@ -9,20 +8,7 @@ use s3::{creds::Credentials, Region};
 
 use crate::config::Config;
 
-#[derive(Debug)]
-pub struct CredentialsError(pub Box<dyn Error>);
-
-impl Display for CredentialsError {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "Error fetching AWS credentials")
-    }
-}
-
-impl Error for CredentialsError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.0.as_ref())
-    }
-}
+use anyhow::{bail, Context, Result};
 
 pub struct ConnectionInfo {
     pub region: Region,
@@ -31,23 +17,22 @@ pub struct ConnectionInfo {
 }
 
 impl ConnectionInfo {
-    pub fn new(config: Config) -> Result<ConnectionInfo, CredentialsError> {
-        let credentials = get_credentials(config.remote_profile)?;
+    pub fn new(config: &Config) -> Result<ConnectionInfo> {
+        let credentials = get_credentials(config.remote_profile.clone())?;
         let region = get_region(
             credentials.clone(),
-            config.remote_region,
-            config.remote_endpoint,
-            &config.remote,
+            config.remote_region.clone(),
+            config.remote_endpoint.clone(),
         )?;
         Ok(ConnectionInfo {
             credentials,
             region,
-            bucket_name: config.remote,
+            bucket_name: config.remote.clone(),
         })
     }
 }
 
-pub fn get_credentials(remote_profile: Option<String>) -> Result<Credentials, CredentialsError> {
+pub fn get_credentials(remote_profile: Option<String>) -> Result<Credentials> {
     // Fetch credentials in that order:
     // - from the environment variables
     // - from AWS profile we we have set one in the config
@@ -60,7 +45,7 @@ pub fn get_credentials(remote_profile: Option<String>) -> Result<Credentials, Cr
                 Credentials::anonymous()
             }
         })
-        .map_err(|err| CredentialsError(Box::new(err)))
+        .context("Error getting credentials for the remote")
 }
 
 #[derive(Debug)]
@@ -78,8 +63,7 @@ pub fn get_region(
     _credentials: Credentials,
     remote_region: Option<String>,
     remote_endpoint: Option<String>,
-    _bucket_name: &str,
-) -> Result<Region, CredentialsError> {
+) -> Result<Region> {
     // Fetch credentials in that order:
     // - from the environment variables
     // - from AWS profile we we have set one in the config
@@ -91,9 +75,10 @@ pub fn get_region(
                 endpoint: remote_endpoint,
             })
         } else if let Some(remote_region) = remote_region {
-            Region::from_str(&remote_region).map_err(|err| (CredentialsError(Box::new(err))))
+            Region::from_str(&remote_region)
+                .with_context(|| format!("Invalid region name {}", remote_region))
         } else {
-            Err(CredentialsError(Box::new(MissingRegionError {})))
+            bail!("Could not find a region or remote endpoint. You can set them in the configuration file or as environment variable (AWS_REGION/AWS_ENDPOINT)");
         }
     })
 }
