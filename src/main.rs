@@ -185,7 +185,7 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                 .with_context(|| format!("Could not retrieve file {} from S3", &file.key))?;
 
             if local.exists() {
-                println!("Found matching local file: {}", local.to_string_lossy());
+                println!("    Found matching local file: {}", local.to_string_lossy());
                 let metadata = std::fs::metadata(&local)
                     .context("Could not get metadata for the local file")?;
                 let last_modified_local = OffsetDateTime::from(
@@ -194,7 +194,7 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                         .context("Could not read modification time for the local file")?,
                 );
                 println!(
-                    "Conflict: Local file: {}, Remote file: {}",
+                    "    Conflict: Local file: {}, Remote file: {}",
                     last_modified_local, last_modified_s3
                 );
                 let local_content = std::fs::read_to_string(&local)
@@ -203,11 +203,11 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                     .context("The remote file is not a text file")?;
                 let patch = diffy::create_patch(&local_content, content_s3);
                 if patch.hunks().is_empty() {
-                    println!("Identical content, skipping");
+                    println!("    Identical content, skipping");
                 } else {
                     let patch_fmt = PatchFormatter::new().with_color();
                     println!(
-                        "Original is local, Modified is remote:\n{}",
+                        "    Original is local, Modified is remote:\n{}",
                         patch_fmt.fmt_patch(&patch)
                     );
                     let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
@@ -224,7 +224,7 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                     }
                 }
             } else {
-                println!("local version missing, retrieving");
+                println!("    local version missing, retrieving");
                 replace_local_file(&local, object.bytes(), SystemTime::from(last_modified_s3))?;
             }
         }

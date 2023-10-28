@@ -21,6 +21,8 @@ A small program to manage my dotfiles and keep them in sync between all my compu
 - implement file upload
 - clean up the config file, pick one name for the remote
 - Add github workflow to generate production artifacts
+- Improve println for the sync phase: shouldn't have to add the leading spaces manually
+- use different return codes
 
 ## How to build statically
 
