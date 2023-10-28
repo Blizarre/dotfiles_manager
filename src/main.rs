@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 use config::Config;
 use filetime::{self, set_file_times, FileTime};
 use home::home_dir;
+use log::{debug, info};
 use path_absolutize::Absolutize;
 use s3::{self, Bucket};
 use std::{
@@ -21,7 +22,7 @@ use crate::connection::ConnectionInfo;
 mod config;
 mod connection;
 
-use anyhow::{bail, Context, Error, Result};
+use anyhow::{bail, Context, Ok, Result};
 
 /// Simple program to greet a person
 #[derive(Parser, Debug)]
@@ -30,6 +31,10 @@ struct Args {
     /// Verbose mode
     #[arg(short, long)]
     verbose: bool,
+
+    /// Quiet mode
+    #[arg(short, long)]
+    quiet: bool,
 
     #[arg(long)]
     config_file: Option<PathBuf>,
@@ -62,20 +67,55 @@ enum Commands {
         /// Root directory on the disk that will be matched with the remote. Default is the home directory
         root_dir: Option<String>,
     },
+    Forget {
+        target: String,
+    },
     Sync,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
+    if args.quiet && args.verbose {
+        bail!("--quiet and --verbose cannot be used together");
+    }
+    if args.verbose {
+        simple_logger::init_with_level(log::Level::Debug)
+    } else if args.quiet {
+        simple_logger::init_with_level(log::Level::Error)
+    } else {
+        simple_logger::init_with_level(log::Level::Info)
+    }?;
+
     let config_file_path = args
         .config_file.as_ref()
         .map_or_else(|| {
             let mut dir = home_dir().context("Unable to find the home directory to get the config file. You can provide the config file as argument with --config-file-path")?;
             dir.push(".dots");
-            Ok::<PathBuf, Error>(dir.to_owned())
+            Ok::<PathBuf>(dir.to_owned())
         }, |p| Ok(p.to_owned())
     )?;
     let config_file_path = config_file_path.as_path();
+
+    if let Commands::Configure {
+        bucket,
+        region,
+        profile,
+        endpoint,
+        root_dir,
+    } = args.command
+    {
+        let mut config = Config::default();
+        config.root_dir = root_dir.clone();
+        config.remote = bucket.clone();
+        config.remote_profile = profile.clone().or(config.remote_profile);
+        config.remote_region = region.clone().or(config.remote_region);
+        config.remote_endpoint = endpoint.clone().or(config.remote_endpoint);
+        config
+            .save(config_file_path)
+            .context("Error saving the config file")?;
+        info!("New configuration saved in {}", config_file_path.display());
+        return Ok(());
+    }
 
     let config = config::Config::load(config_file_path)?;
 
@@ -88,29 +128,34 @@ fn main() -> Result<()> {
     let root_dir = &root_dir.as_path();
 
     let result = match &args.command {
-        Commands::Configure {
-            root_dir,
-            bucket,
-            region,
-            profile,
-            endpoint,
-        } => {
-            let mut config = Config::default();
-            config.root_dir = root_dir.clone();
-            config.remote = bucket.clone();
-            config.remote_profile = profile.clone().or(config.remote_profile);
-            config.remote_region = region.clone().or(config.remote_region);
-            config.remote_endpoint = endpoint.clone().or(config.remote_endpoint);
-            config
-                .save(config_file_path)
-                .context("Error saving the config file")
-        }
         Commands::Sync => sync(root_dir, &config),
         Commands::Track { file_name, target } => {
             track(file_name.as_path(), root_dir, target.clone(), &config)
         }
+        Commands::Forget { target } => forget(target, &config),
+        Commands::Configure { .. } => Ok(()),
     };
     result
+}
+
+fn forget(target: &str, config: &Config) -> Result<()> {
+    let connection_info = ConnectionInfo::new(config)?;
+    let bucket = Bucket::new(
+        &connection_info.bucket_name,
+        connection_info.region,
+        connection_info.credentials,
+    )
+    .context("Error when loading the remote bucket")?;
+
+    let response = bucket.delete_object(target)?;
+
+    match response.status_code() {
+        // The only valid status code
+        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html
+        204 => Ok(()),
+        403 => bail!("Deletion failed with error 403: Forbidden. Please check that your credentials allows you to delete files to the S3 bucket"),
+        err => bail!("Deletion failed with error code {}", err)
+    }
 }
 
 fn track(
@@ -142,8 +187,8 @@ fn track(
     if !file_path.starts_with(&root_path) {
         bail!(
             "Error, the file {} is not inside the root path {}",
-            file_path.to_string_lossy(),
-            root_path.to_string_lossy()
+            file_path.display(),
+            root_path.display()
         );
     }
 
@@ -166,15 +211,15 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
         connection_info.credentials,
     )
     .context("Error when loading the remote bucket")?;
-    println!("Listing files from {}", connection_info.bucket_name);
+    info!("Listing files from {}", connection_info.bucket_name);
 
     let results = bucket
-        .list("".to_string(), Some("/".to_string()))
+        .list("".to_string(), None)
         .context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
 
     for result in results {
         for file in result.contents {
-            println!("Remote: {}, {}", file.key, file.last_modified);
+            debug!("Remote: {}, {}", file.key, file.last_modified);
 
             let last_modified_s3 = OffsetDateTime::parse(&file.last_modified, &Rfc3339)
                 .context("Error parsing the file modification date from the aws s3 header")?;
@@ -185,7 +230,7 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                 .with_context(|| format!("Could not retrieve file {} from S3", &file.key))?;
 
             if local.exists() {
-                println!("    Found matching local file: {}", local.to_string_lossy());
+                debug!("    Found matching local file: {}", local.display());
                 let metadata = std::fs::metadata(&local)
                     .context("Could not get metadata for the local file")?;
                 let last_modified_local = OffsetDateTime::from(
@@ -193,7 +238,7 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                         .modified()
                         .context("Could not read modification time for the local file")?,
                 );
-                println!(
+                debug!(
                     "    Conflict: Local file: {}, Remote file: {}",
                     last_modified_local, last_modified_s3
                 );
@@ -203,11 +248,12 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                     .context("The remote file is not a text file")?;
                 let patch = diffy::create_patch(&local_content, content_s3);
                 if patch.hunks().is_empty() {
-                    println!("    Identical content, skipping");
+                    info!("    Identical content, skipping: {}", file.key);
                 } else {
                     let patch_fmt = PatchFormatter::new().with_color();
-                    println!(
-                        "    Original is local, Modified is remote:\n{}",
+                    info!(
+                        "    {} - Original is local, Modified is remote:\n{}",
+                        file.key,
                         patch_fmt.fmt_patch(&patch)
                     );
                     let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
@@ -220,11 +266,11 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                         )?,
                         "s" => continue,
                         "e" => return Ok(()),
-                        _ => println!("Unsupported at the moment"),
+                        _ => bail!("Unknown action"),
                     }
                 }
             } else {
-                println!("    local version missing, retrieving");
+                info!("    local version missing, retrieving");
                 replace_local_file(&local, object.bytes(), SystemTime::from(last_modified_s3))?;
             }
         }
@@ -232,15 +278,25 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
     Ok(())
 }
 
-fn upload_local_file(file_path: &Path, bucket_key: &str, _bucket: &Bucket) -> Result<()> {
-    println!(
-        "Uploading {} to {}",
-        file_path.to_string_lossy(),
-        bucket_key
-    );
-    //    let data = std::fs::read(file_path).context("Error reading file to upload");
-    //    bucket.put_object(bucket_key, &data).map(|_| {})
-    Ok(())
+fn upload_local_file(file_path: &Path, bucket_key: &str, bucket: &Bucket) -> Result<()> {
+    info!("Uploading {} to {}", file_path.display(), bucket_key);
+    let data = std::fs::read(file_path).context("Error reading file to upload")?;
+    let response = bucket.put_object(bucket_key, &data).with_context(|| {
+        format!(
+            "Error uploading file {} to the S3 bucket {}:{}",
+            file_path.display(),
+            bucket.name,
+            bucket_key
+        )
+    })?;
+    // I guess that's a bug from the s3 crate that isn't propagating errors from the http library.
+    match response.status_code() {
+        // The only valid status code
+        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
+        200 => Ok(()),
+        403 => bail!("Upload failed with error 403: Forbidden. Please check that your credentials allows you to upload files to the S3 bucket"),
+        err => bail!("Upload failed with error code {}", err)
+    }
 }
 
 fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) -> Result<()> {
@@ -251,7 +307,7 @@ fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) ->
 }
 
 fn ask_user(prompt: &str, accepted_values: Vec<&str>) -> String {
-    println!("{}", prompt);
+    print!("{}", prompt);
     let mut line = String::new();
     while !accepted_values.contains(&line.trim()) {
         print!("input [{}]: ", accepted_values.join(", "));

@@ -11,12 +11,14 @@ clap = { version = "4.4.6", features = ["derive"] }
 diffy = "0.3.0"
 filetime = "0.2.22"
 home = "0.5.5"
+log = "0.4.20"
 path-absolutize = "3.1.1"
 rust-s3 = { version = "0.33.0", features = [
     "sync-rustls-tls",
     "tags",
 ], default-features = false }
 serde = { version = "1.0.189", features = ["derive"] }
+simple_logger = { version = "4.2.0", default-features = false }
 time = { version = "0.3.30", features = ["parsing"] }
 toml = { version = "0.8.2", features = ["parse"] }
 

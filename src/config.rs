@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+use log::{debug};
 use serde::{self, Deserialize, Serialize};
 use std::{
     fs::File,
@@ -19,7 +20,7 @@ pub struct Config {
 impl Config {
     pub fn load(config_file_path: &Path) -> Result<Config> {
         if config_file_path.exists() {
-            println!("Loading config from {:?}", config_file_path);
+            debug!("Loading config from {:?}", config_file_path);
             let config_data = File::open(config_file_path)
                 .and_then(|mut file| {
                     let mut content = String::new();
@@ -28,12 +29,7 @@ impl Config {
                 .context("Error opening the configuration file")?;
             Ok(toml::from_str(&config_data)?)
         } else {
-            println!("Creating config file in {:?}", config_file_path);
-            let config = Config::default();
-            config
-                .save(config_file_path)
-                .context("Error saving default configuration file")?;
-            Ok(config)
+            bail!("Could not find the configuration file. You can set its location with --config-file or create it with the configure' command")
         }
     }
 
