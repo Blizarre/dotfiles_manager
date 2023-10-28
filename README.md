@@ -23,6 +23,7 @@ A small program to manage my dotfiles and keep them in sync between all my compu
 - Add github workflow to generate production artifacts
 - Improve println for the sync phase: shouldn't have to add the leading spaces manually
 - use different return codes
+- add whole directories or multiple files at a time
 
 ## How to build statically
 
