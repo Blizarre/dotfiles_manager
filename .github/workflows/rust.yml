@@ -28,16 +28,18 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v3
-      - name: Install musl-tools
+      - name: Install musl-tools and UPX
         run: sudo apt-get update && sudo apt-get -y install musl-tools upx
       - name: Add the musl target build pipeline
         run: rustup target add x86_64-unknown-linux-musl
       - name: Build in release mode
         run: cargo build --release --target x86_64-unknown-linux-musl
       - name: Compress the file
-        run: upx --brute --no-lzma target/x86_64-unknown-linux-musl/release/dotfile
+        run: upx target/x86_64-unknown-linux-musl/release/dotfile
+      - name: Generate the help file and check the packed binary
+        run: echo '```' > help.md && target/x86_64-unknown-linux-musl/release/dotfile --help >> help.md && echo '```' >> help.md
       - uses: ncipollo/release-action@v1
         if: startsWith(github.ref, 'refs/tags/')
         with:
           artifacts: "target/x86_64-unknown-linux-musl/release/dotfile"
-          body: "Release ${{github.ref_name}}"
+          bodyFile: "help.md"

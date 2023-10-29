@@ -26,7 +26,7 @@ mod connection;
 
 use anyhow::{bail, Context, Ok, Result};
 
-/// Simple program to greet a person
+/// dotfile manages your configuration files across your computers.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {

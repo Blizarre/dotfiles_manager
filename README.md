@@ -3,7 +3,7 @@
 A small program to manage my dotfiles and keep them in sync between all my computers.
 - must be _very_ simple to install and deploy:
     - Shipped as a single static binary (installable anywhere by a simple `curl`)
-    - Small binary (less than 2MB)
+    - Small-ish binary (less than 2MB)
     - single command to configure the program
     - single command to pull the files on a new computer
     - single command to add files/sync to/from the remote
