@@ -19,7 +19,7 @@ pub struct Config {
 
 impl Config {
     pub fn load(config_file_path: &Path) -> Result<Config> {
-        if config_file_path.exists() {
+        let mut config: Config = if config_file_path.exists() {
             debug!("Loading config from {:?}", config_file_path);
             let config_data = File::open(config_file_path)
                 .and_then(|mut file| {
@@ -27,10 +27,21 @@ impl Config {
                     file.read_to_string(&mut content).map(|_| content)
                 })
                 .context("Error opening the configuration file")?;
-            Ok(toml::from_str(&config_data)?)
+            toml::from_str(&config_data)?
         } else {
-            bail!("Could not find the configuration file. You can set its location with --config-file or create it with the configure' command")
+            Config::default()
+        };
+
+        let _ = std::env::var("DOT_REMOTE").map(|val| config.remote = val);
+        let _ = std::env::var("DOT_REMOTE_REGION").map(|val| config.remote_region = Some(val));
+        let _ = std::env::var("DOT_REMOTE_PROFILE").map(|val| config.remote_profile = Some(val));
+        let _ = std::env::var("DOT_REMOTE_ENDPOINT").map(|val| config.remote_endpoint = Some(val));
+        let _ = std::env::var("DOT_ROOT_DIR").map(|val| config.root_dir = Some(val));
+
+        if config.remote == String::default() {
+            bail!("Could not find the configuration file. You can set its location with --config-file or create it with the configure' command. You can also set DOT_REMOTE without a configuration file")
         }
+        Ok(config)
     }
 
     pub fn save(&self, config_file_path: &Path) -> Result<()> {

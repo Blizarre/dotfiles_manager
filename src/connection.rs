@@ -4,11 +4,12 @@ use std::{
     str::FromStr,
 };
 
+use log::info;
 use s3::{creds::Credentials, Region};
 
 use crate::config::Config;
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 
 pub struct ConnectionInfo {
     pub region: Region,
@@ -78,7 +79,8 @@ pub fn get_region(
             Region::from_str(&remote_region)
                 .with_context(|| format!("Invalid region name {}", remote_region))
         } else {
-            bail!("Could not find a region or remote endpoint. You can set them in the configuration file or as environment variable (AWS_REGION/AWS_ENDPOINT)");
+            info!("Could not find an AWS region. Using the default 'us-east-1'");
+            Ok(Region::UsEast1)
         }
     })
 }

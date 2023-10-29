@@ -55,19 +55,19 @@ enum Commands {
         #[arg(short, long)]
         target: Option<String>,
     },
-    /// Configure the Repository
+    /// Configure the Repository and create the configuration file. This can be skipped with environment variables
     Configure {
-        /// Target bucket to store the dotfiles
+        /// Target bucket to store the dotfiles (DOT_REMOTE)
         bucket: String,
-        /// AWS Region where the bucket is located
+        /// AWS Region where the bucket is located. us-east-1 by default (DOT_REMOTE_REGION)
         region: Option<String>,
-        /// Optional aws profile to use to connect to the bucket. If not defined will use environment variables and default to anonymous.
+        /// Optional aws profile to use to connect to the bucket. If not defined will use environment variables and default to anonymous (DOT_REMOTE_PROFILE)
         #[arg(short, long)]
         profile: Option<String>,
-        /// Optional S3 url of the remote endpoint to use to communicate with the bucket. This will override the region
+        /// Optional S3 url of the remote endpoint to use to communicate with the bucket. This will override the region (DOT_REMOTE_ENDPOINT)
         #[arg(long)]
         endpoint: Option<String>,
-        /// Root directory on the disk that will be matched with the remote. Default is the home directory
+        /// Root directory on the disk that will be matched with the remote. Default is the home directory (DOT_ROOT_DIR)
         root_dir: Option<String>,
     },
     /// Forget a file in the remote
