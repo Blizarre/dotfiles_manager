@@ -21,3 +21,5 @@ jobs:
       run: cargo install cross --git https://github.com/cross-rs/cross
     - name: Cross build
       run: cross build --target aarch64-unknown-linux-musl
+    - name: What has been built
+      run:  ls -R target/
