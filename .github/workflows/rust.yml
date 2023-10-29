@@ -15,11 +15,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - name: Install docker
-      run: sudo apt-get update && sudo apt-get -y install podman
+    - name: Install podman
+      run: sudo apt-get update && sudo apt-get -y install podman upx
     - name: Install cross compiler for rust
       run: cargo install cross --git https://github.com/cross-rs/cross
     - name: Cross build
-      run: cross build --target aarch64-unknown-linux-musl
+      run: cross build --target aarch64-unknown-linux-musl --release
     - name: What has been built
-      run:  ls -R target/
+      run:  file target/aarch64-unknown-linux-musl/release/dotfile
+    - name: Can we pack it?
+      run:  upx target/aarch64-unknown-linux-musl/release/dotfile
+    - name: Is it still runnable?
+      run:  file target/aarch64-unknown-linux-musl/release/dotfile
