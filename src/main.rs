@@ -7,6 +7,8 @@ use log::{debug, info};
 use path_absolutize::Absolutize;
 use s3::{self, Bucket};
 use std::{
+    collections::HashSet,
+    fs::{self, DirEntry},
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
@@ -47,9 +49,10 @@ struct Args {
 enum Commands {
     /// Add a new dotfile
     Track {
-        /// Local filename
-        file_name: PathBuf,
+        /// Local filenames or directories
+        sources: Vec<PathBuf>,
         /// Target file on the remote
+        #[arg(short, long)]
         target: Option<String>,
     },
     /// Configure the Repository
@@ -59,7 +62,7 @@ enum Commands {
         /// AWS Region where the bucket is located
         region: Option<String>,
         /// Optional aws profile to use to connect to the bucket. If not defined will use environment variables and default to anonymous.
-        #[arg(long)]
+        #[arg(short, long)]
         profile: Option<String>,
         /// Optional S3 url of the remote endpoint to use to communicate with the bucket. This will override the region
         #[arg(long)]
@@ -129,9 +132,7 @@ fn main() -> Result<()> {
 
     let result = match &args.command {
         Commands::Sync => sync(root_dir, &config),
-        Commands::Track { file_name, target } => {
-            track(file_name.as_path(), root_dir, target.clone(), &config)
-        }
+        Commands::Track { sources, target } => track(&sources, root_dir, target.clone(), &config),
         Commands::Forget { target } => forget(target, &config),
         Commands::Configure { .. } => Ok(()),
     };
@@ -158,20 +159,28 @@ fn forget(target: &str, config: &Config) -> Result<()> {
     }
 }
 
+fn visit_dirs(dir: &Path, cb: &mut dyn FnMut(&DirEntry)) -> Result<()> {
+    if dir.is_dir() {
+        for entry in fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit_dirs(&path, cb)?;
+            } else {
+                cb(&entry);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn track(
-    file_path: &Path,
+    sources: &Vec<PathBuf>,
     root_dir: &Path,
     remote_path: Option<String>,
     config: &config::Config,
 ) -> Result<()> {
     let connection_info = ConnectionInfo::new(config)?;
-    let file_path = file_path
-        .absolutize()
-        .context("Could not find the absolute location of the input file")?;
-
-    let root_path = Path::new(&root_dir)
-        .absolutize()
-        .context("Could not find the absolute location of the root path")?;
 
     let bucket = Bucket::new(
         &connection_info.bucket_name,
@@ -180,27 +189,53 @@ fn track(
     )
     .context("Error when loading the remote bucket")?;
 
-    if let Some(remote_path) = remote_path {
-        return upload_local_file(&file_path, &remote_path, &bucket);
+    let mut files: HashSet<PathBuf> = HashSet::new();
+
+    let root_path = Path::new(&root_dir)
+        .absolutize()
+        .context("Could not find the absolute location of the root path")?;
+
+    for source_path in sources {
+        let source_path = source_path
+            .absolutize()
+            .context("Could not find the absolute location of the input file")?;
+
+        if let Some(remote_path) = remote_path {
+            if source_path.is_dir() {
+                bail!("The remote path can only be defined if there is a single source file")
+            }
+            return upload_local_file(&source_path, &remote_path, &bucket);
+        }
+
+        if !source_path.starts_with(&root_path) {
+            bail!(
+                "Error, the file {} is not inside the root path {}",
+                source_path.display(),
+                root_path.display()
+            );
+        }
+
+        if source_path.is_dir() {
+            visit_dirs(&source_path, &mut |f| {
+                files.insert(f.path());
+            })?;
+        } else {
+            files.insert(source_path.to_path_buf());
+        };
     }
 
-    if !file_path.starts_with(&root_path) {
-        bail!(
-            "Error, the file {} is not inside the root path {}",
-            file_path.display(),
-            root_path.display()
-        );
+    for file in files {
+        let remote_path = file
+            .strip_prefix(&root_path)
+            .context("Error when trying to generate the path in the S3 bucket")?;
+
+        upload_local_file(
+            &file,
+            remote_path.to_str().context("Invalid remote path")?,
+            &bucket,
+        )?
     }
-
-    let remote_path = file_path
-        .strip_prefix(root_path)
-        .context("Error when trying to generate the path in the S3 bucket")?;
-
-    upload_local_file(
-        &file_path,
-        remote_path.to_str().context("Invalid remote path")?,
-        &bucket,
-    )
+    Ok(())
 }
 
 fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
