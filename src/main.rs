@@ -70,10 +70,12 @@ enum Commands {
         /// Root directory on the disk that will be matched with the remote. Default is the home directory
         root_dir: Option<String>,
     },
-    Forget {
-        target: String,
-    },
+    /// Forget a file in the remote
+    Forget { target: String },
+    /// Synchronize your local directory with the remote (download changes / upload changes)
     Sync,
+    /// List all files tracked by dotfile
+    List,
 }
 
 fn main() -> Result<()> {
@@ -130,13 +132,13 @@ fn main() -> Result<()> {
         )?;
     let root_dir = &root_dir.as_path();
 
-    let result = match &args.command {
+    match &args.command {
         Commands::Sync => sync(root_dir, &config),
-        Commands::Track { sources, target } => track(&sources, root_dir, target.clone(), &config),
+        Commands::Track { sources, target } => track(sources, root_dir, target.clone(), &config),
         Commands::Forget { target } => forget(target, &config),
         Commands::Configure { .. } => Ok(()),
-    };
-    result
+        Commands::List {} => list(&config),
+    }
 }
 
 fn forget(target: &str, config: &Config) -> Result<()> {
@@ -157,6 +159,27 @@ fn forget(target: &str, config: &Config) -> Result<()> {
         403 => bail!("Deletion failed with error 403: Forbidden. Please check that your credentials allows you to delete files to the S3 bucket"),
         err => bail!("Deletion failed with error code {}", err)
     }
+}
+
+fn list(config: &Config) -> Result<()> {
+    let connection_info = ConnectionInfo::new(config)?;
+    let bucket = Bucket::new(
+        &connection_info.bucket_name,
+        connection_info.region,
+        connection_info.credentials,
+    )
+    .context("Error when loading the remote bucket")?;
+
+    let results = bucket
+        .list("".to_string(), None)
+        .context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
+
+    for result in results {
+        for file in result.contents {
+            println!("{}", file.key);
+        }
+    }
+    Ok(())
 }
 
 fn visit_dirs(dir: &Path, cb: &mut dyn FnMut(&DirEntry)) -> Result<()> {
