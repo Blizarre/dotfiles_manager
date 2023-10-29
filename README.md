@@ -19,7 +19,6 @@ A small program to manage my dotfiles and keep them in sync between all my compu
 - Unit tests
 - clean up the config file, pick one name for the remote
 - use different return codes
-- add an aarch64 linux target for the production build
 
 ## How to build statically
 
