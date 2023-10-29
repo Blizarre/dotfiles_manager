@@ -358,6 +358,11 @@ fn upload_local_file(file_path: &Path, bucket_key: &str, bucket: &Bucket) -> Res
 }
 
 fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Cannot create intermediate directory {}", parent.display()))?
+    }
+
     std::fs::write(path, content).context("Error updating the local file")?;
     let last_modified_s3 = FileTime::from_system_time(modified_time);
     set_file_times(path, last_modified_s3, last_modified_s3)
