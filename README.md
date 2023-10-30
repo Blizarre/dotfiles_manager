@@ -23,8 +23,21 @@ Potential improvements:
 - Unit tests
 - Implement a proper hierarchy for parameters (cli args / config file / env variable). It is only partially implemented for now
 - use different return codes
+- Improve the logs, the level/source doesn't matter outside of --verbose
 
 ## Examples
+
+### Fetch config on a new computer (no config, public S3 bucket, raspberry pi)
+```
+$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.2.3/dotfile.aarch64 -o /tmp/dotfile
+$ chmod +x /tmp/dotfile
+$ DOT_REMOTE=dotfile-bucket /tmp/dotfile sync
+INFO  [dotfile] Listing files from dotfile-bucket
+INFO  [dotfile]     Identical content, skipping: .config/fish/config.fish
+INFO  [dotfile]     Identical content, skipping: .config/fish/functions/c.fish
+INFO  [dotfile]     Identical content, skipping: .config/fish/functions/ff.fish
+...
+```
 
 ### Sync on a new computer (with config, private S3 bucket using the aws profile `aws_profile`)
 
@@ -38,18 +51,7 @@ INFO  [dotfile] Listing files from dotfile-bucket
 INFO  [dotfile]     Identical content, skipping: .config/fish/config.fish
 INFO  [dotfile]     Identical content, skipping: .config/fish/functions/c.fish
 INFO  [dotfile]     Identical content, skipping: .config/fish/functions/ff.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/fish_prompt.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/ga.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/gap.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/gc.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/gl.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/gs.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/jfu.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/ju.fish
-INFO  [dotfile]     Identical content, skipping: .config/htop/htoprc
-INFO  [dotfile]     Identical content, skipping: .gitconfig
-INFO  [dotfile]     Identical content, skipping: .tmux.conf
-INFO  [dotfile]     Identical content, skipping: .vimrc
+...
 ```
 
 NOTE: The environment variables `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` can be provided during a sync instead of selecting a profile a config time.
@@ -64,11 +66,4 @@ $ dotfile track ~/.bashrc
 INFO  [dotfile] Uploading /home/simon/.bashrc to .bashrc
 $ dotfile forget ~/.bashrc
 INFO  [dotfile] The file .bashrc has been removed
-```
-
-### Fetch config on a new computer (no config, public S3 bucket, raspberry pi)
-```shell
-curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.2.3/dotfile.aarch64 -o /tmp/dotfile
-chmod +x /tmp/dotfile
-DOT_REMOTE=dotfile-bucket /tmp/dotfile sync
 ```
