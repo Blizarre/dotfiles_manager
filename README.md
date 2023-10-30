@@ -1,4 +1,4 @@
-/# Dotfiles Manager
+# Dotfiles Manager
 
 A small program to manage my dotfiles and keep them in sync between all my computers.
 - must be _very_ simple to install and deploy:
