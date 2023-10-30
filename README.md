@@ -24,7 +24,7 @@ Potential improvements:
 - Implement a proper hierarchy for parameters (cli args / config file / env variable). It is only partially implemented for now
 - use different return codes
 - Improve the logs, the level/source doesn't matter outside of --verbose
-
+- Implement ignore, and give the option to add to the ignore list during sync
 ## Examples
 
 ### Fetch config on a new computer (no config, public S3 bucket, raspberry pi)
