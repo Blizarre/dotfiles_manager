@@ -336,7 +336,7 @@ fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
                     }
                 }
             } else {
-                info!("    local version missing, retrieving");
+                info!("    Local version missing, retrieving {}", file.key);
                 replace_local_file(&local, object.bytes(), SystemTime::from(last_modified_s3))?;
             }
         }
