@@ -150,12 +150,20 @@ fn forget(target: &str, config: &Config) -> Result<()> {
     )
     .context("Error when loading the remote bucket")?;
 
+    let (_, status_code) = bucket.head_object(target)?;
+    if status_code == 404 {
+        bail!("The file {} does not exist in the bucket", target)
+    }
+
     let response = bucket.delete_object(target)?;
 
     match response.status_code() {
         // The only valid status code
         // https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html
-        204 => Ok(()),
+        204 => {
+            info!("The file {} has been removed", target);
+            Ok(())
+        },
         403 => bail!("Deletion failed with error 403: Forbidden. Please check that your credentials allows you to delete files to the S3 bucket"),
         err => bail!("Deletion failed with error code {}", err)
     }
