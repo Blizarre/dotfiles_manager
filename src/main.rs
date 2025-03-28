@@ -1,26 +1,26 @@
 use clap::{Parser, Subcommand};
 
+use backend::Backend;
 use config::Config;
 use filetime::{self, set_file_times, FileTime};
 use home::home_dir;
 use log::{debug, info};
 use path_absolutize::Absolutize;
-use s3::{self, Bucket};
 use std::{
     collections::HashSet,
     fs::{self, DirEntry},
     io::Write,
     path::{Path, PathBuf},
     str::FromStr,
-    time::SystemTime,
 };
 
-use time::{format_description::well_known::Rfc3339, OffsetDateTime};
+use time::OffsetDateTime;
 
 use diffy::{self, PatchFormatter};
 
 use crate::connection::ConnectionInfo;
 
+mod backend;
 mod config;
 mod connection;
 
@@ -132,60 +132,29 @@ fn main() -> Result<()> {
         )?;
     let root_dir = &root_dir.as_path();
 
+    let backend = backend::S3::new(&config)?;
+
     match &args.command {
-        Commands::Sync => sync(root_dir, &config),
-        Commands::Track { sources, target } => track(sources, root_dir, target.clone(), &config),
-        Commands::Forget { target } => forget(target, &config),
+        Commands::Sync => sync(root_dir, &backend),
+        Commands::Track { sources, target } => track(sources, root_dir, target.clone(), &backend),
+        Commands::Forget { target } => forget(target, &backend),
         Commands::Configure { .. } => Ok(()),
-        Commands::List {} => list(&config),
+        Commands::List {} => list(&backend),
     }
 }
 
-fn forget(target: &str, config: &Config) -> Result<()> {
-    let connection_info = ConnectionInfo::new(config)?;
-    let bucket = Bucket::new(
-        &connection_info.bucket_name,
-        connection_info.region,
-        connection_info.credentials,
-    )
-    .context("Error when loading the remote bucket")?;
-
-    let (_, status_code) = bucket.head_object(target)?;
-    if status_code == 404 {
-        bail!("The file {} does not exist in the bucket", target)
-    }
-
-    let response = bucket.delete_object(target)?;
-
-    match response.status_code() {
-        // The only valid status code
-        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_DeleteObject.html
-        204 => {
-            info!("The file {} has been removed", target);
-            Ok(())
-        },
-        403 => bail!("Deletion failed with error 403: Forbidden. Please check that your credentials allows you to delete files to the S3 bucket"),
-        err => bail!("Deletion failed with error code {}", err)
-    }
+fn forget(target: &str, backend: &dyn Backend) -> Result<()> {
+    backend.delete(target)?;
+    info!("The file {} has been removed", target);
+    Ok(())
 }
 
-fn list(config: &Config) -> Result<()> {
-    let connection_info = ConnectionInfo::new(config)?;
-    let bucket = Bucket::new(
-        &connection_info.bucket_name,
-        connection_info.region,
-        connection_info.credentials,
-    )
-    .context("Error when loading the remote bucket")?;
-
-    let results = bucket
-        .list("".to_string(), None)
+fn list(backend: &dyn Backend) -> Result<()> {
+    let results = backend.list("")
         .context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
 
-    for result in results {
-        for file in result.contents {
-            println!("{}", file.key);
-        }
+    for file in results {
+        println!("{}", file);
     }
     Ok(())
 }
@@ -209,17 +178,8 @@ fn track(
     sources: &Vec<PathBuf>,
     root_dir: &Path,
     remote_path: Option<String>,
-    config: &config::Config,
+    backend: &dyn Backend,
 ) -> Result<()> {
-    let connection_info = ConnectionInfo::new(config)?;
-
-    let bucket = Bucket::new(
-        &connection_info.bucket_name,
-        connection_info.region,
-        connection_info.credentials,
-    )
-    .context("Error when loading the remote bucket")?;
-
     let mut files: HashSet<PathBuf> = HashSet::new();
 
     let root_path = Path::new(&root_dir)
@@ -235,7 +195,7 @@ fn track(
             if source_path.is_dir() {
                 bail!("The remote path can only be defined if there is a single source file")
             }
-            return upload_local_file(&source_path, &remote_path, &bucket);
+            return upload_local_file(&source_path, &remote_path, backend);
         }
 
         if !source_path.starts_with(&root_path) {
@@ -263,117 +223,86 @@ fn track(
         upload_local_file(
             &file,
             remote_path.to_str().context("Invalid remote path")?,
-            &bucket,
+            backend,
         )?
     }
     Ok(())
 }
 
-fn sync(root_dir: &Path, config: &config::Config) -> Result<()> {
-    let connection_info = ConnectionInfo::new(config)?;
-    let bucket = Bucket::new(
-        &connection_info.bucket_name,
-        connection_info.region,
-        connection_info.credentials,
-    )
-    .context("Error when loading the remote bucket")?;
-    info!("Listing files from {}", connection_info.bucket_name);
+fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
+    info!("Listing files");
 
-    let results = bucket
-        .list("".to_string(), None)
-        .context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
+    let results = backend.list("").context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
 
-    for result in results {
-        for file in result.contents {
-            debug!("Remote: {}, {}", file.key, file.last_modified);
+    for file in results {
+        debug!("Remote: {}, {}", file.key, file.last_modified);
 
-            let last_modified_s3 = OffsetDateTime::parse(&file.last_modified, &Rfc3339)
-                .context("Error parsing the file modification date from the aws s3 header")?;
+        let local = root_dir.join(Path::new(&file.key));
+        let content = backend
+            .get(&file.key)
+            .with_context(|| format!("Could not retrieve file {}", &file.key))?;
 
-            let local = root_dir.join(Path::new(&file.key));
-            let object = bucket
-                .get_object(&file.key)
-                .with_context(|| format!("Could not retrieve file {} from S3", &file.key))?;
-
-            if local.exists() {
-                debug!("    Found matching local file: {}", local.display());
-                let metadata = std::fs::metadata(&local)
-                    .context("Could not get metadata for the local file")?;
-                let last_modified_local = OffsetDateTime::from(
-                    metadata
-                        .modified()
-                        .context("Could not read modification time for the local file")?,
-                );
-                debug!(
-                    "    Conflict: Local file: {}, Remote file: {}",
-                    last_modified_local, last_modified_s3
-                );
-                let local_content = std::fs::read_to_string(&local)
-                    .context("Error reading the content of the local file")?;
-                let content_s3 = &String::from_utf8(object.bytes().to_vec())
-                    .context("The remote file is not a text file")?;
-                let patch = diffy::create_patch(&local_content, content_s3);
-                if patch.hunks().is_empty() {
-                    info!("    Identical content, skipping: {}", file.key);
-                } else {
-                    let patch_fmt = PatchFormatter::new().with_color();
-                    info!(
-                        "    {} - Original is local, Modified is remote:\n{}",
-                        file.key,
-                        patch_fmt.fmt_patch(&patch)
-                    );
-                    let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
-                    match response.as_str() {
-                        "u" => upload_local_file(&local, &file.key, &bucket)?,
-                        "o" => replace_local_file(
-                            &local,
-                            object.bytes(),
-                            SystemTime::from(last_modified_s3),
-                        )?,
-                        "s" => continue,
-                        "e" => return Ok(()),
-                        _ => bail!("Unknown action"),
-                    }
-                }
+        if local.exists() {
+            debug!("    Found matching local file: {}", local.display());
+            let metadata =
+                std::fs::metadata(&local).context("Could not get metadata for the local file")?;
+            let last_modified_local = OffsetDateTime::from(
+                metadata
+                    .modified()
+                    .context("Could not read modification time for the local file")?,
+            );
+            debug!(
+                "    Conflict: Local file: {}, Remote file: {}",
+                last_modified_local, file.last_modified
+            );
+            let local_content = std::fs::read_to_string(&local)
+                .context("Error reading the content of the local file")?;
+            let content_text = &String::from_utf8(content.clone())
+                .context("The remote file is not a text file")?;
+            let patch = diffy::create_patch(&local_content, content_text);
+            if patch.hunks().is_empty() {
+                info!("    Identical content, skipping: {}", file.key);
             } else {
-                info!("    Local version missing, retrieving {}", file.key);
-                replace_local_file(&local, object.bytes(), SystemTime::from(last_modified_s3))?;
+                let patch_fmt = PatchFormatter::new().with_color();
+                info!(
+                    "    {} - Original is local, Modified is remote:\n{}",
+                    file.key,
+                    patch_fmt.fmt_patch(&patch)
+                );
+                let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
+                match response.as_str() {
+                    "u" => upload_local_file(&local, &file.key, backend)?,
+                    "o" => replace_local_file(&local, &content, file.last_modified)?,
+                    "s" => continue,
+                    "e" => return Ok(()),
+                    _ => bail!("Unknown action"),
+                }
             }
+        } else {
+            info!("    Local version missing, retrieving {}", file.key);
+            replace_local_file(&local, &content, file.last_modified)?;
         }
     }
     Ok(())
 }
 
-fn upload_local_file(file_path: &Path, bucket_key: &str, bucket: &Bucket) -> Result<()> {
-    info!("Uploading {} to {}", file_path.display(), bucket_key);
+fn upload_local_file(file_path: &Path, path: &str, backend: &dyn Backend) -> Result<()> {
+    info!("Uploading {} to {}", file_path.display(), path);
     let data = std::fs::read(file_path).context("Error reading file to upload")?;
-    let response = bucket.put_object(bucket_key, &data).with_context(|| {
-        format!(
-            "Error uploading file {} to the S3 bucket {}:{}",
-            file_path.display(),
-            bucket.name,
-            bucket_key
-        )
-    })?;
-    // I guess that's a bug from the s3 crate that isn't propagating errors from the http library.
-    match response.status_code() {
-        // The only valid status code
-        // https://docs.aws.amazon.com/AmazonS3/latest/API/API_PutObject.html
-        200 => Ok(()),
-        403 => bail!("Upload failed with error 403: Forbidden. Please check that your credentials allows you to upload files to the S3 bucket"),
-        err => bail!("Upload failed with error code {}", err)
-    }
+    backend
+        .put(path, &data)
+        .with_context(|| format!("Error uploading file {} at {}", file_path.display(), path))
 }
 
-fn replace_local_file(path: &Path, content: &[u8], modified_time: SystemTime) -> Result<()> {
+fn replace_local_file(path: &Path, content: &[u8], modified_time: OffsetDateTime) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .with_context(|| format!("Cannot create intermediate directory {}", parent.display()))?
     }
 
     std::fs::write(path, content).context("Error updating the local file")?;
-    let last_modified_s3 = FileTime::from_system_time(modified_time);
-    set_file_times(path, last_modified_s3, last_modified_s3)
+    let last_modified = FileTime::from_system_time(modified_time.into());
+    set_file_times(path, last_modified, last_modified)
         .context("Error when updating the time for the downloaded file")
 }
 
@@ -385,5 +314,5 @@ fn ask_user(prompt: &str, accepted_values: Vec<&str>) -> String {
         std::io::stdout().flush().unwrap_or_default();
         std::io::stdin().read_line(&mut line).unwrap();
     }
-    return line.trim().to_owned();
+    line.trim().to_owned()
 }

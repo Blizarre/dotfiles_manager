@@ -1,8 +1,4 @@
-use std::{
-    error::Error,
-    fmt::{self, Display, Formatter},
-    str::FromStr,
-};
+use std::str::FromStr;
 
 use log::info;
 use s3::{creds::Credentials, Region};
@@ -47,17 +43,6 @@ pub fn get_credentials(remote_profile: Option<String>) -> Result<Credentials> {
             }
         })
         .context("Error getting credentials for the remote")
-}
-
-#[derive(Debug)]
-struct MissingRegionError;
-
-impl Error for MissingRegionError {}
-
-impl Display for MissingRegionError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write! {f, "Could not find a region/endpoint for the S3 bucket"}
-    }
 }
 
 pub fn get_region(
