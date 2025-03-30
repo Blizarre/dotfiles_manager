@@ -18,11 +18,9 @@ use time::OffsetDateTime;
 
 use diffy::{self, PatchFormatter};
 
-use crate::connection::ConnectionInfo;
-
 mod backend;
 mod config;
-mod connection;
+mod s3;
 
 use anyhow::{bail, Context, Ok, Result};
 
@@ -132,7 +130,7 @@ fn main() -> Result<()> {
         )?;
     let root_dir = &root_dir.as_path();
 
-    let backend = backend::S3::new(&config)?;
+    let backend = s3::S3::new(&config)?;
 
     match &args.command {
         Commands::Sync => sync(root_dir, &backend),
