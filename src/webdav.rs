@@ -5,13 +5,13 @@ use crate::{
 use anyhow::{anyhow, Ok, Result};
 use iref::{IriBuf, IriRefBuf};
 use time::{format_description::well_known, OffsetDateTime};
-use ureq::http::{Method, Request, Uri};
+use ureq::http::{Method, Request};
 use ureq::Agent;
 use xml::name::OwnedName;
 
 pub struct Webdav {
     session: Agent,
-    base_iri: Uri,
+    base_iri: IriBuf,
 }
 
 impl Backend for Webdav {
@@ -41,7 +41,7 @@ impl Backend for Webdav {
         let response = self.session.run(
             Request::builder()
                 .method(Method::from_bytes(b"PROPFIND")?)
-                .uri(self.base_iri.clone())
+                .uri(self.base_iri.to_string())
                 .header("Content-Type", "application/xml")
                 .body(
                     "<?xml version=\"1.0\" encoding=\"utf-8\" ?> 
@@ -143,7 +143,7 @@ impl Backend for Webdav {
         // We need to remove the ending slash as they would conflict with the suffix detection
         // feature of the Iri lib
         let iri = config.url.trim_end_matches("/").to_string();
-        let iri = Uri::from_maybe_shared(iri)?;
+        let iri = IriBuf::new(iri)?;
         let agent_config = Agent::config_builder()
             .allow_non_standard_methods(true)
             .build();
