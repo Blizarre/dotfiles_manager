@@ -9,11 +9,8 @@ use std::{
 
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
+    pub url: String,
     pub root_dir: Option<String>,
-    pub remote: String,
-    pub remote_profile: Option<String>,
-    pub remote_region: Option<String>,
-    pub remote_endpoint: Option<String>,
     pub ignore: Vec<String>,
 }
 
@@ -32,13 +29,9 @@ impl Config {
             Config::default()
         };
 
-        let _ = std::env::var("DOT_REMOTE").map(|val| config.remote = val);
-        let _ = std::env::var("DOT_REMOTE_REGION").map(|val| config.remote_region = Some(val));
-        let _ = std::env::var("DOT_REMOTE_PROFILE").map(|val| config.remote_profile = Some(val));
-        let _ = std::env::var("DOT_REMOTE_ENDPOINT").map(|val| config.remote_endpoint = Some(val));
-        let _ = std::env::var("DOT_ROOT_DIR").map(|val| config.root_dir = Some(val));
+        let _ = std::env::var("DOT_URL").map(|val| config.url = val);
 
-        if config.remote == String::default() {
+        if config.url == String::default() {
             bail!("Could not find the configuration file. You can set its location with --config-file or create it with the configure' command. You can also set DOT_REMOTE without a configuration file")
         }
         Ok(config)

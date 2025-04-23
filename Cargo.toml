@@ -3,8 +3,6 @@ name = "dotfile"
 version = "0.2.4"
 edition = "2021"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
 anyhow = "1.0.75"
 clap = { version = "4.4.6", features = ["derive"] }
@@ -13,16 +11,16 @@ filetime = "0.2.22"
 home = "0.5.5"
 log = "0.4.20"
 path-absolutize = "3.1.1"
-rust-s3 = { version = "0.33.0", features = [
-    "sync-rustls-tls",
-    "tags",
-], default-features = false }
 serde = { version = "1.0.189", features = ["derive"] }
+xml = "0.8"
 simple_logger = { version = "4.2.0", default-features = false }
 time = { version = "0.3.30", features = ["parsing"] }
 toml = { version = "0.8.2", features = ["parse"] }
+url = "2.5"
+ureq = { version = "3", features = ["rustls", "gzip"] }
+iref = "3.2.2"
 
 [profile.release]
 strip = true
 opt-level = "z" # Optimize for size.
-lto = true
+lto =true

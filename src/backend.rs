@@ -8,7 +8,7 @@ pub trait Backend {
     fn get(&self, key: &str) -> Result<Vec<u8>>;
     fn delete(&self, key: &str) -> Result<()>;
     fn put(&self, key: &str, data: &[u8]) -> Result<()>;
-    fn list(&self, prefix: &str) -> Result<Vec<File>>;
+    fn list(&self) -> Result<Vec<File>>;
     fn new(config: &Config) -> Result<Self>
     where
         Self: Sized;

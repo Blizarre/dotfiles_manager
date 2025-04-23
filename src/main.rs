@@ -1,7 +1,6 @@
 use clap::{Parser, Subcommand};
 
 use backend::Backend;
-use config::Config;
 use filetime::{self, set_file_times, FileTime};
 use home::home_dir;
 use log::{debug, info};
@@ -20,7 +19,7 @@ use diffy::{self, PatchFormatter};
 
 mod backend;
 mod config;
-mod s3;
+mod webdav;
 
 use anyhow::{bail, Context, Ok, Result};
 
@@ -55,16 +54,10 @@ enum Commands {
     },
     /// Configure the Repository and create the configuration file. This can be skipped with environment variables
     Configure {
-        /// Target bucket to store the dotfiles (DOT_REMOTE)
-        bucket: String,
-        /// AWS Region where the bucket is located. us-east-1 by default (DOT_REMOTE_REGION)
-        region: Option<String>,
-        /// Optional aws profile to use to connect to the bucket. If not defined will use environment variables and default to anonymous (DOT_REMOTE_PROFILE)
-        #[arg(short, long)]
-        profile: Option<String>,
-        /// Optional S3 url of the remote endpoint to use to communicate with the bucket. This will override the region (DOT_REMOTE_ENDPOINT)
-        #[arg(long)]
-        endpoint: Option<String>,
+        /// Target URL (DOT_URL). Should contain scheme and authentication information if
+        /// necessary: https://user:password@webdavserver.com/location/of/the/directory/
+        /// User and password should be urlencoded.
+        url: String,
         /// Root directory on the disk that will be matched with the remote. Default is the home directory (DOT_ROOT_DIR)
         root_dir: Option<String>,
     },
@@ -99,20 +92,12 @@ fn main() -> Result<()> {
     )?;
     let config_file_path = config_file_path.as_path();
 
-    if let Commands::Configure {
-        bucket,
-        region,
-        profile,
-        endpoint,
-        root_dir,
-    } = args.command
-    {
-        let mut config = Config::default();
-        config.root_dir = root_dir.clone();
-        config.remote = bucket.clone();
-        config.remote_profile = profile.clone().or(config.remote_profile);
-        config.remote_region = region.clone().or(config.remote_region);
-        config.remote_endpoint = endpoint.clone().or(config.remote_endpoint);
+    if let Commands::Configure { url, root_dir } = args.command {
+        let config = config::Config {
+            url: url.clone(),
+            root_dir: root_dir.clone(),
+            ..Default::default()
+        };
         config
             .save(config_file_path)
             .context("Error saving the config file")?;
@@ -130,14 +115,14 @@ fn main() -> Result<()> {
         )?;
     let root_dir = &root_dir.as_path();
 
-    let backend = s3::S3::new(&config)?;
+    let backend = webdav::Webdav::new(&config)?;
 
     match &args.command {
         Commands::Sync => sync(root_dir, &backend),
         Commands::Track { sources, target } => track(sources, root_dir, target.clone(), &backend),
         Commands::Forget { target } => forget(target, &backend),
         Commands::Configure { .. } => Ok(()),
-        Commands::List {} => list(&backend),
+        Commands::List => list(&backend),
     }
 }
 
@@ -148,8 +133,8 @@ fn forget(target: &str, backend: &dyn Backend) -> Result<()> {
 }
 
 fn list(backend: &dyn Backend) -> Result<()> {
-    let results = backend.list("")
-        .context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
+    let results = backend.list()
+        .context("Could not list the remote content. It could be an invalid endpoint, invalid credentials, or network issues.")?;
 
     for file in results {
         println!("{}", file);
@@ -230,7 +215,7 @@ fn track(
 fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
     info!("Listing files");
 
-    let results = backend.list("").context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
+    let results = backend.list().context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
 
     for file in results {
         debug!("Remote: {}, {}", file.key, file.last_modified);
