@@ -201,7 +201,7 @@ fn track(
     for file in files {
         let remote_path = file
             .strip_prefix(&root_path)
-            .context("Error when trying to generate the path in the S3 bucket")?;
+            .context("Error when trying to generate the path for the remote endpoint")?;
 
         upload_local_file(
             &file,
@@ -215,7 +215,7 @@ fn track(
 fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
     info!("Listing files");
 
-    let results = backend.list().context("Could not list the bucket content. It could be an invalid region or endpoint, invalid credentials, or network issues.")?;
+    let results = backend.list().context("Could not list the remote content. It could be an invalid URL, invalid credentials, or network issues.")?;
 
     for file in results {
         debug!("Remote: {}, {}", file.key, file.last_modified);
