@@ -13,14 +13,20 @@ log = "0.4.20"
 path-absolutize = "3.1.1"
 serde = { version = "1.0.189", features = ["derive"] }
 xml = "0.8"
-simple_logger = { version = "4.2.0", default-features = false }
+env_logger = { version = "0.11.8" }
 time = { version = "0.3.30", features = ["parsing"] }
 toml = { version = "0.8.2", features = ["parse"] }
 url = "2.5"
 ureq = { version = "3", features = ["rustls", "gzip"] }
 iref = "3.2.2"
+pct-str = "2.0.0"
 
 [profile.release]
 strip = true
 opt-level = "z" # Optimize for size.
 lto =true
+
+[dev-dependencies]
+tokio = { version = "1.44.2", features = ["rt", "macros"] }
+warp = "0.3.7"
+webdav-handler = { version = "0.2.0", features = ["warp-compat"] }

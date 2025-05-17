@@ -14,6 +14,7 @@ pub trait Backend {
         Self: Sized;
 }
 
+#[derive(Debug)]
 pub struct File {
     pub key: String,
     pub last_modified: OffsetDateTime,

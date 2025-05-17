@@ -74,13 +74,15 @@ fn main() -> Result<()> {
     if args.quiet && args.verbose {
         bail!("--quiet and --verbose cannot be used together");
     }
-    if args.verbose {
-        simple_logger::init_with_level(log::Level::Debug)
+    let mut logger = env_logger::Builder::from_default_env();
+    let logger = if args.verbose {
+        logger.filter_level(log::LevelFilter::Debug)
     } else if args.quiet {
-        simple_logger::init_with_level(log::Level::Error)
+        logger.filter_level(log::LevelFilter::Error)
     } else {
-        simple_logger::init_with_level(log::Level::Info)
-    }?;
+        &mut logger
+    };
+    logger.init();
 
     let config_file_path = args
         .config_file.as_ref()
