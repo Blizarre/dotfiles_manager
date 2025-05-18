@@ -6,6 +6,7 @@ use anyhow::{anyhow, Ok, Result};
 use iref::{IriBuf, IriRefBuf};
 use log::{debug, info};
 use pct_str::{IriReserved, PctString};
+use serde::{Deserialize, Serialize};
 use time::{format_description::well_known, OffsetDateTime};
 use ureq::Agent;
 use ureq::{
@@ -14,9 +15,17 @@ use ureq::{
 };
 use xml::name::OwnedName;
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ExtraHeader {
+    key: String,
+    value: String,
+}
+
+
 pub struct Webdav {
     session: Agent,
     base_iri: IriBuf,
+    extra_headers: Vec<ExtraHeader>,
 }
 
 impl Backend for Webdav {
@@ -83,20 +92,22 @@ impl Backend for Webdav {
     }
 
     fn list(&self) -> Result<Vec<File>> {
-        let response = self.session.run(
-            Request::builder()
-                .method(Method::from_bytes(b"PROPFIND")?)
-                .uri(self.base_iri.to_string())
-                .header("Content-Type", "application/xml")
-                .body(
-                    "<?xml version=\"1.0\" encoding=\"utf-8\" ?> 
+        let mut request = Request::builder()
+            .method(Method::from_bytes(b"PROPFIND")?)
+            .uri(self.base_iri.to_string())
+            .header("Content-Type", "application/xml");
+
+        for header in self.extra_headers.iter() {
+            request = request.header(&header.key, &header.value);
+        }
+        let response = self.session.run(request.body(
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?> 
   <propfind xmlns=\"DAV:\"> 
     <prop> 
       <getlastmodified/>
     </prop>
   </propfind>",
-                )?,
-        )?;
+        )?)?;
         let body = response.into_body();
         let reader = xml::EventReader::new(body.into_reader());
         let mut value = None;
@@ -194,14 +205,18 @@ impl Backend for Webdav {
         Ok(Self {
             session: Agent::new_with_config(agent_config),
             base_iri: iri,
+            extra_headers: config.extra_headers.clone(),
         })
     }
 }
 
 #[cfg(test)]
 mod tests {
+    // We need to add the x-litmus header because the webdav server implementation that we are
+    // using prevent infinite Depth  for PROPFIND by default.
 
     use super::Config;
+    use super::ExtraHeader;
     use super::Webdav;
     use crate::backend::Backend;
     use anyhow::Result;
@@ -227,6 +242,15 @@ mod tests {
         dav_handler(handler)
     }
 
+    impl ExtraHeader {
+        fn new(key: &str, value: &str) -> Self {
+            ExtraHeader {
+                key: key.to_string(),
+                value: value.to_string(),
+            }
+        }
+    }
+
     #[tokio::test]
     async fn test_single_file_root() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -236,6 +260,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
+                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/root.txt", b"hello world")?;
@@ -271,6 +296,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
+                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/d1/d2/f1.txt", b"hello world")?;
@@ -300,6 +326,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
+                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/d1/d2/f1.txt", b"hello world")?;

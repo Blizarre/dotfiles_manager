@@ -7,11 +7,14 @@ use std::{
     path::Path,
 };
 
+use crate::webdav::ExtraHeader;
+
 #[derive(Serialize, Deserialize, Debug, Default)]
 pub struct Config {
     pub url: String,
     pub root_dir: Option<String>,
     pub ignore: Vec<String>,
+    pub extra_headers: Vec<ExtraHeader>,
 }
 
 impl Config {
