@@ -59,7 +59,7 @@ NOTE: The environment variables DOT\_REMOTE can be provided during a sync as wel
 
 ### Track/forget a file (require authentication)
 ```
-$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.2.3/dotfile -o ~/bin/dotfile
+$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.3.0/dotfile -o ~/bin/dotfile
 $ chmod +x ~/bin/dotfile
 $ dotfile configure https://user@password:server.com/prefix/
 INFO  [dotfile] New configuration saved in /home/simon/.dots
