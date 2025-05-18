@@ -62,7 +62,7 @@ enum Commands {
         root_dir: Option<String>,
     },
     /// Forget a file in the remote
-    Forget { target: String },
+    Forget { target: PathBuf },
     /// Synchronize your local directory with the remote (download changes / upload changes)
     Sync,
     /// List all files tracked by dotfile
@@ -122,15 +122,27 @@ fn main() -> Result<()> {
     match &args.command {
         Commands::Sync => sync(root_dir, &backend),
         Commands::Track { sources, target } => track(sources, root_dir, target.clone(), &backend),
-        Commands::Forget { target } => forget(target, &backend),
+        Commands::Forget { target } => forget(root_dir, target, &backend),
         Commands::Configure { .. } => Ok(()),
         Commands::List => list(&backend),
     }
 }
 
-fn forget(target: &str, backend: &dyn Backend) -> Result<()> {
-    backend.delete(target)?;
-    info!("The file {} has been removed", target);
+fn forget(root_dir: &Path, target: &PathBuf, backend: &dyn Backend) -> Result<()> {
+    let root_path = Path::new(&root_dir)
+        .absolutize()
+        .context("Could not find the absolute location of the root path")?;
+
+    let target_path = target
+        .absolutize()
+        .context("Could not find the absolute location of the file to forget")?;
+
+    let remote_path = target_path
+        .strip_prefix(&root_path)
+        .context("Error when trying to generate the path for the remote endpoint")?;
+
+    backend.delete(remote_path.to_str().context("Invalid remote path")?)?;
+    info!("The file {:?} has been forgotten", target.to_string_lossy());
     Ok(())
 }
 
