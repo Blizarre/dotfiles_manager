@@ -3,9 +3,9 @@ use crate::{
     config::Config,
 };
 use anyhow::{anyhow, Ok, Result};
-use iref::{IriBuf, IriRefBuf};
-use log::{debug, info};
-use pct_str::{IriReserved, PctString};
+use iref::{uri::SegmentBuf, IriBuf, IriRefBuf, UriBuf};
+use log::debug;
+use pct_str::{PctString, URIReserved};
 use serde::{Deserialize, Serialize};
 use time::{format_description::well_known, OffsetDateTime};
 use ureq::Agent;
@@ -21,46 +21,67 @@ pub struct ExtraHeader {
     value: String,
 }
 
-
 pub struct Webdav {
     session: Agent,
-    base_iri: IriBuf,
+    base_uri: UriBuf,
     extra_headers: Vec<ExtraHeader>,
+}
+
+fn get_segments(key: &str) -> Vec<String> {
+    key.split('/')
+        .map(|s| PctString::encode(s.chars(), URIReserved).into_string())
+        .collect()
 }
 
 impl Backend for Webdav {
     fn get(&self, key: &str) -> Result<Vec<u8>> {
-        let encoded = PctString::encode(key.chars(), IriReserved::Query);
+        let segments = get_segments(key);
+        debug!(
+            "GET key {}, segments {:?}, base_uri: {}",
+            key,
+            segments,
+            self.base_uri.path()
+        );
         Ok(self
             .session
-            .get(format!("{}/{}", self.base_iri, encoded))
+            .get(format!("{}/{}", self.base_uri, segments.join("/")))
             .call()?
             .body_mut()
             .read_to_vec()?)
     }
+
     fn delete(&self, key: &str) -> Result<()> {
-        let encoded = PctString::encode(key.chars(), IriReserved::Query);
+        let segments = get_segments(key);
+        debug!(
+            "DELETE key {}, segments {:?}, base_uri: {}",
+            key,
+            segments,
+            self.base_uri.path()
+        );
         self.session
-            .delete(format!("{}/{}", self.base_iri, encoded))
+            .delete(format!("{}/{}", self.base_uri, segments.join("/")))
             .call()?;
         Ok(())
     }
 
     fn put(&self, key: &str, data: &[u8]) -> Result<()> {
-        let key = IriRefBuf::new(PctString::encode(key.chars(), IriReserved::Query).to_string())?;
-        let key_uri = key.resolved(&self.base_iri);
-        info!(
-            "key {}, key_uri {}, base_uri: {}",
+        let segments: Vec<SegmentBuf> = get_segments(key)
+            .iter()
+            .map(|s| {
+                Ok(SegmentBuf::new(s.as_bytes().to_owned())
+                    .map_err(|e| anyhow!("Invalid path name {:?}", e))?)
+            })
+            .collect::<Result<Vec<SegmentBuf>>>()?;
+        debug!(
+            "PUT key {}, segments {:?}, base_uri: {}",
             key,
-            key_uri,
-            self.base_iri.path()
+            segments,
+            self.base_uri.path()
         );
-        let suffix = key_uri.relative_to(&self.base_iri);
-        let mut tmp = self.base_iri.clone();
+        let mut tmp = self.base_uri.clone();
 
         // We need to remove the tailing /
         tmp.path_mut().pop();
-        let segments: Vec<_> = suffix.path().segments().collect();
         for s in &segments[..segments.len() - 1] {
             debug!("Checking if collection {} exists", s);
             tmp.path_mut().push(s);
@@ -94,7 +115,7 @@ impl Backend for Webdav {
     fn list(&self) -> Result<Vec<File>> {
         let mut request = Request::builder()
             .method(Method::from_bytes(b"PROPFIND")?)
-            .uri(self.base_iri.to_string())
+            .uri(self.base_uri.to_string())
             .header("Content-Type", "application/xml");
 
         for header in self.extra_headers.iter() {
@@ -168,10 +189,11 @@ impl Backend for Webdav {
                                     "invalid data returned by the server, href field missing"
                                 ))?;
                                 let lastmodified = lastmodified.ok_or(anyhow!("invalid data returned by the server, lastmodified field missing"))?;
-                                let base_uri = IriBuf::new(self.base_iri.to_string())?;
+                                let base_uri = IriBuf::new(self.base_uri.to_string())?;
                                 let href = IriRefBuf::new(href)?;
                                 let href_uri = href.resolved(&base_uri);
                                 let thing = href_uri.relative_to(&base_uri).to_string();
+                                let thing = PctString::new(thing)?.decode();
                                 // Ignore empty keys and lines ending with "/" as they are directories
                                 if !(thing.ends_with("/") || thing.is_empty()) {
                                     files.push(File {
@@ -193,18 +215,19 @@ impl Backend for Webdav {
 
     fn new(config: &Config) -> Result<Self> {
         // We need to add the ending slash to express that it is a collection
-        let iri = if config.url.ends_with('/') {
+        let uri = if config.url.ends_with('/') {
             config.url.clone()
         } else {
             config.url.clone() + "/"
         };
-        let iri = IriBuf::new(iri)?;
+        let uri = UriBuf::new(uri.clone().into())
+            .map_err(|e| anyhow!("Cannot parse URI {}: {:?}", uri, e))?;
         let agent_config = Agent::config_builder()
             .allow_non_standard_methods(true)
             .build();
         Ok(Self {
             session: Agent::new_with_config(agent_config),
-            base_iri: iri,
+            base_uri: uri,
             extra_headers: config.extra_headers.clone(),
         })
     }
@@ -212,8 +235,10 @@ impl Backend for Webdav {
 
 #[cfg(test)]
 mod tests {
+    // Since the spec is pretty complex and I did not want to reimplement it, the tests are run directly against
+    // a compliant implementation based on `warp`, in the crate `webdav_handler`
     // We need to add the x-litmus header because the webdav server implementation that we are
-    // using prevent infinite Depth  for PROPFIND by default.
+    // using prevent infinite Depth for PROPFIND by default.
 
     use super::Config;
     use super::ExtraHeader;
@@ -353,6 +378,41 @@ mod tests {
                 "Expecting d1/d3/f1.txt only in file list: {:?}",
                 file_list
             );
+
+            Ok(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn test_special_char_names() {
+        let _ = env_logger::builder().is_test(true).try_init();
+
+        with_server(|port| {
+            let c = Config {
+                ignore: vec![],
+                root_dir: None,
+                url: format!("http://localhost:{}", port).to_string(),
+                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
+            };
+            let w = Webdav::new(&c)?;
+            w.put("/d1/$ !💣.txt", b"hello world")?;
+            assert!(w.get("/d1/$ !💣.txt")? == b"hello world");
+
+            let file_list = w.list()?;
+            assert!(
+                file_list.len() == 1,
+                "Expecting 1 file only in file list: {:?}",
+                file_list
+            );
+            assert!(
+                file_list[0].key == "d1/$ !💣.txt",
+                "Expecting d1/$ !💣.txt only in file list: {:?}",
+                file_list
+            );
+
+            w.delete("/d1/$ !💣.txt")?;
+            assert!(w.list()?.len() == 0);
 
             Ok(())
         })
