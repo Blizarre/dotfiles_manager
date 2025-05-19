@@ -30,7 +30,7 @@ Potential improvements:
 
 ### Fetch config on a new computer (no config, public endpoint, raspberry pi)
 ```
-$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.2.3/dotfile.aarch64 -o /tmp/dotfile
+$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.3.1/dotfile.aarch64 -o /tmp/dotfile
 $ chmod +x /tmp/dotfile
 $ DOT_REMOTE=https://server.com/prefix/ /tmp/dotfile sync
 INFO  [dotfile] Listing files
@@ -43,15 +43,16 @@ INFO  [dotfile]     Identical content, skipping: .config/fish/functions/ff.fish
 ### Sync on a new computer (with config, and URL authentication)
 
 ```
-$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.2.3/dotfile -o ~/bin/dotfile
+$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.3.1/dotfile -o ~/bin/dotfile
 $ chmod +x ~/bin/dotfile
 $ dotfile configure https://user@password:server.com/prefix/
 INFO  [dotfile] New configuration saved in /home/simon/.dots
 $ dotfile sync
-INFO  [dotfile] Listing files
-INFO  [dotfile]     Identical content, skipping: .config/fish/config.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/c.fish
-INFO  [dotfile]     Identical content, skipping: .config/fish/functions/ff.fish
+[INFO ] Listing files
+[INFO ]     Identical content, skipping: .config/fish/conf.d/rustup.fish
+[INFO ]     Identical content, skipping: .config/fish/functions/c.fish
+[INFO ]     Identical content, skipping: .config/fish/functions/ff.fish
+[INFO ]     Identical content, skipping: .config/fish/functions/fish_prompt.fish
 ...
 ```
 
@@ -59,7 +60,7 @@ NOTE: The environment variables DOT\_REMOTE can be provided during a sync as wel
 
 ### Track/forget a file (require authentication)
 ```
-$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.3.0/dotfile -o ~/bin/dotfile
+$ curl -L https://github.com/Blizarre/dotfiles_manager/releases/download/0.3.1/dotfile -o ~/bin/dotfile
 $ chmod +x ~/bin/dotfile
 $ dotfile configure https://user@password:server.com/prefix/
 INFO  [dotfile] New configuration saved in /home/simon/.dots
