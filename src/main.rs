@@ -74,13 +74,19 @@ fn main() -> Result<()> {
     if args.quiet && args.verbose {
         bail!("--quiet and --verbose cannot be used together");
     }
-    let mut logger = env_logger::Builder::from_default_env();
+    let mut logger = env_logger::Builder::new();
+    logger
+        .filter_level(log::LevelFilter::Info)
+        .parse_default_env();
     let logger = if args.verbose {
         logger.filter_level(log::LevelFilter::Debug)
     } else if args.quiet {
-        logger.filter_level(log::LevelFilter::Error)
+        logger
+            .filter_level(log::LevelFilter::Error)
+            .format_timestamp(None)
+            .format_target(false)
     } else {
-        &mut logger
+        logger.format_timestamp(None).format_target(false)
     };
     logger.init();
 
