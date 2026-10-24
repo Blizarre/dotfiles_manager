@@ -7,6 +7,7 @@ use iref::{uri::SegmentBuf, IriBuf, IriRefBuf, UriBuf};
 use log::debug;
 use pct_str::{PctString, URIReserved};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use time::{format_description::well_known, OffsetDateTime};
 use ureq::Agent;
 use ureq::{
@@ -27,10 +28,123 @@ pub struct Webdav {
     extra_headers: Vec<ExtraHeader>,
 }
 
+struct RemoteEntry {
+    uri: IriBuf,
+    key: String,
+    last_modified: Option<OffsetDateTime>,
+    is_collection: bool,
+}
+
 fn get_segments(key: &str) -> Vec<String> {
     key.split('/')
         .map(|s| PctString::encode(s.chars(), URIReserved).into_string())
         .collect()
+}
+
+impl Webdav {
+    fn propfind(&self, collection: &IriBuf) -> Result<Vec<RemoteEntry>> {
+        let mut request = Request::builder()
+            .method(Method::from_bytes(b"PROPFIND")?)
+            .uri(collection.to_string())
+            .header("Content-Type", "application/xml")
+            .header("Depth", "1");
+
+        for header in &self.extra_headers {
+            request = request.header(&header.key, &header.value);
+        }
+        let response = self.session.run(request.body(
+            "<?xml version=\"1.0\" encoding=\"utf-8\" ?> 
+  <propfind xmlns=\"DAV:\"> 
+    <prop> 
+      <getlastmodified/>
+    </prop> 
+  </propfind>",
+        )?)?;
+        let body = response.into_body();
+        let reader = xml::EventReader::new(body.into_reader());
+        let base_iri = IriBuf::new(self.base_uri.to_string())?;
+        let mut value = None;
+        let mut in_response = false;
+        let mut entries = vec![];
+        let mut href = None;
+        let mut lastmodified = None;
+        for event in reader {
+            match event? {
+                xml::reader::XmlEvent::StartElement {
+                    name:
+                        OwnedName {
+                            local_name,
+                            namespace: _,
+                            prefix: _,
+                        },
+                    attributes: _,
+                    namespace: _,
+                } => match local_name.as_str() {
+                    "href" | "getlastmodified" => {
+                        if in_response {
+                            value = Some(String::new());
+                        }
+                    }
+                    "response" => {
+                        in_response = true;
+                        href = None;
+                        lastmodified = None;
+                        value = None;
+                    }
+                    _ => {}
+                },
+                xml::reader::XmlEvent::Characters(content) => {
+                    if let Some(ref mut value) = value {
+                        value.push_str(&content);
+                    }
+                }
+                xml::reader::XmlEvent::EndElement {
+                    name:
+                        OwnedName {
+                            local_name,
+                            namespace: _,
+                            prefix: _,
+                        },
+                } => {
+                    if in_response {
+                        match local_name.as_str() {
+                            "href" => {
+                                href = value.take();
+                            }
+                            "getlastmodified" => {
+                                lastmodified = Some(OffsetDateTime::parse(
+                                    &value.take().ok_or(anyhow!(
+                                        "invalid data returned by the server, getlastmodified value missing"
+                                    ))?,
+                                    &well_known::Rfc2822,
+                                )?);
+                            }
+                            "response" => {
+                                let href = href.take().ok_or(anyhow!(
+                                    "invalid data returned by the server, href field missing"
+                                ))?;
+                                let href = IriRefBuf::new(href)?;
+                                let href_uri = href.resolved(collection);
+                                let thing = href_uri.relative_to(&base_iri).to_string();
+                                let thing = PctString::new(thing)?.decode();
+                                let is_collection = thing.ends_with("/") || thing.is_empty();
+                                entries.push(RemoteEntry {
+                                    uri: href_uri,
+                                    key: thing.to_string(),
+                                    last_modified: lastmodified.take(),
+                                    is_collection,
+                                });
+                                in_response = false;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Ok(entries)
+    }
 }
 
 impl Backend for Webdav {
@@ -42,12 +156,13 @@ impl Backend for Webdav {
             segments,
             self.base_uri.path()
         );
-        Ok(self
+        let mut request = self
             .session
-            .get(format!("{}/{}", self.base_uri, segments.join("/")))
-            .call()?
-            .body_mut()
-            .read_to_vec()?)
+            .get(format!("{}/{}", self.base_uri, segments.join("/")));
+        for header in &self.extra_headers {
+            request = request.header(&header.key, &header.value);
+        }
+        Ok(request.call()?.body_mut().read_to_vec()?)
     }
 
     fn delete(&self, key: &str) -> Result<()> {
@@ -58,9 +173,13 @@ impl Backend for Webdav {
             segments,
             self.base_uri.path()
         );
-        self.session
-            .delete(format!("{}/{}", self.base_uri, segments.join("/")))
-            .call()?;
+        let mut request = self
+            .session
+            .delete(format!("{}/{}", self.base_uri, segments.join("/")));
+        for header in &self.extra_headers {
+            request = request.header(&header.key, &header.value);
+        }
+        request.call()?;
         Ok(())
     }
 
@@ -85,20 +204,24 @@ impl Backend for Webdav {
         for s in &segments[..segments.len() - 1] {
             debug!("Checking if collection {} exists", s);
             tmp.path_mut().push(s);
-            let request = Request::builder()
+            let mut request = Request::builder()
                 .method(Method::from_bytes(b"PROPFIND")?)
                 .header("Depth", "1") // TODO: Probably related to the webdav compliance
-                .uri(tmp.to_string())
-                .body(String::new())?;
-            let response = self.session.run(request);
+                .uri(tmp.to_string());
+            for header in &self.extra_headers {
+                request = request.header(&header.key, &header.value);
+            }
+            let response = self.session.run(request.body(String::new())?);
             if let Err(Error::StatusCode(err_code)) = response {
                 if err_code == 404 {
                     debug!("Creating collection {}", tmp);
-                    let request = Request::builder()
+                    let mut request = Request::builder()
                         .method(Method::from_bytes(b"MKCOL")?)
-                        .uri(tmp.to_string())
-                        .body(String::new())?;
-                    self.session.run(request)?;
+                        .uri(tmp.to_string());
+                    for header in &self.extra_headers {
+                        request = request.header(&header.key, &header.value);
+                    }
+                    self.session.run(request.body(String::new())?)?;
                 } else {
                     response?;
                 }
@@ -108,106 +231,39 @@ impl Backend for Webdav {
         }
         tmp.path_mut()
             .push(segments.last().ok_or(anyhow!("Empty key"))?);
-        self.session.put(tmp.to_string()).send(data)?;
+        let mut request = self.session.put(tmp.to_string());
+        for header in &self.extra_headers {
+            request = request.header(&header.key, &header.value);
+        }
+        request.send(data)?;
         Ok(())
     }
 
     fn list(&self) -> Result<Vec<File>> {
-        let mut request = Request::builder()
-            .method(Method::from_bytes(b"PROPFIND")?)
-            .uri(self.base_uri.to_string())
-            .header("Content-Type", "application/xml");
-
-        for header in self.extra_headers.iter() {
-            request = request.header(&header.key, &header.value);
-        }
-        let response = self.session.run(request.body(
-            "<?xml version=\"1.0\" encoding=\"utf-8\" ?> 
-  <propfind xmlns=\"DAV:\"> 
-    <prop> 
-      <getlastmodified/>
-    </prop>
-  </propfind>",
-        )?)?;
-        let body = response.into_body();
-        let reader = xml::EventReader::new(body.into_reader());
-        let mut value = None;
-        let mut in_response = false;
         let mut files = vec![];
-        let mut href = None;
-        let mut lastmodified = None;
-        for event in reader {
-            match event? {
-                xml::reader::XmlEvent::StartElement {
-                    name:
-                        OwnedName {
-                            local_name,
-                            namespace: _,
-                            prefix: _,
-                        },
-                    attributes: _,
-                    namespace: _,
-                } => match local_name.as_str() {
-                    "href" | "getlastmodified" => {
-                        if in_response {
-                            value = Some(String::new());
-                        }
+        let mut collections = vec![IriBuf::new(self.base_uri.to_string())?];
+        let mut visited = HashSet::new();
+
+        while let Some(collection) = collections.pop() {
+            if !visited.insert(collection.to_string()) {
+                continue;
+            }
+            for entry in self.propfind(&collection)? {
+                if entry.is_collection {
+                    // The first entry is the collection itself.
+                    if !entry.key.is_empty() {
+                        collections.push(entry.uri);
                     }
-                    "response" => {
-                        in_response = true;
-                    }
-                    _ => {}
-                },
-                xml::reader::XmlEvent::Characters(content) => {
-                    if let Some(ref mut value) = value {
-                        value.push_str(&content);
-                    }
+                } else {
+                    let last_modified = entry.last_modified.ok_or(anyhow!(
+                        "invalid data returned by the server, lastmodified field missing for {}",
+                        entry.key
+                    ))?;
+                    files.push(File {
+                        key: entry.key,
+                        last_modified,
+                    });
                 }
-                xml::reader::XmlEvent::EndElement {
-                    name:
-                        OwnedName {
-                            local_name,
-                            namespace: _,
-                            prefix: _,
-                        },
-                } => {
-                    if in_response {
-                        match local_name.as_str() {
-                            "href" => {
-                                href = value.clone();
-                                value = None;
-                            }
-                            "getlastmodified" => {
-                                lastmodified = Some(OffsetDateTime::parse(
-                                    &value.unwrap(),
-                                    &well_known::Rfc2822,
-                                )?);
-                                value = None;
-                            }
-                            "response" => {
-                                let href = href.clone().ok_or(anyhow!(
-                                    "invalid data returned by the server, href field missing"
-                                ))?;
-                                let lastmodified = lastmodified.ok_or(anyhow!("invalid data returned by the server, lastmodified field missing"))?;
-                                let base_uri = IriBuf::new(self.base_uri.to_string())?;
-                                let href = IriRefBuf::new(href)?;
-                                let href_uri = href.resolved(&base_uri);
-                                let thing = href_uri.relative_to(&base_uri).to_string();
-                                let thing = PctString::new(thing)?.decode();
-                                // Ignore empty keys and lines ending with "/" as they are directories
-                                if !(thing.ends_with("/") || thing.is_empty()) {
-                                    files.push(File {
-                                        key: thing.to_string(),
-                                        last_modified: lastmodified,
-                                    });
-                                }
-                                in_response = false;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-                _ => {}
             }
         }
         Ok(files)
@@ -237,8 +293,10 @@ impl Backend for Webdav {
 mod tests {
     // Since the spec is pretty complex and I did not want to reimplement it, the tests are run directly against
     // a compliant implementation based on `warp`, in the crate `webdav_handler`
-    // We need to add the x-litmus header because the webdav server implementation that we are
-    // using prevent infinite Depth for PROPFIND by default.
+    // The test server requires a custom header on every request, which checks that
+    // the configured extra headers are applied to all WebDAV methods.
+    // It also does not allow infinite Depth for PROPFIND, which checks that list()
+    // recursively walks collections with Depth: 1.
 
     use super::Config;
     use super::ExtraHeader;
@@ -254,6 +312,7 @@ mod tests {
     use tokio::task::spawn_blocking;
     use warp::filters::BoxedFilter;
     use warp::reply::Reply;
+    use warp::Filter;
     use webdav_handler::fakels::FakeLs;
     use webdav_handler::memfs::MemFs;
     use webdav_handler::warp::dav_handler;
@@ -264,7 +323,10 @@ mod tests {
             .filesystem(MemFs::new())
             .locksystem(FakeLs::new())
             .build_handler();
-        dav_handler(handler)
+        warp::header::exact("x-test-header", "yes")
+            .and(dav_handler(handler))
+            .map(|reply| reply)
+            .boxed()
     }
 
     impl ExtraHeader {
@@ -285,7 +347,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
-                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
+                extra_headers: vec![ExtraHeader::new("x-test-header", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/root.txt", b"hello world")?;
@@ -321,7 +383,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
-                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
+                extra_headers: vec![ExtraHeader::new("x-test-header", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/d1/d2/f1.txt", b"hello world")?;
@@ -351,7 +413,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
-                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
+                extra_headers: vec![ExtraHeader::new("x-test-header", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/d1/d2/f1.txt", b"hello world")?;
@@ -393,7 +455,7 @@ mod tests {
                 ignore: vec![],
                 root_dir: None,
                 url: format!("http://localhost:{}", port).to_string(),
-                extra_headers: vec![ExtraHeader::new("x-litmus", "yes")],
+                extra_headers: vec![ExtraHeader::new("x-test-header", "yes")],
             };
             let w = Webdav::new(&c)?;
             w.put("/d1/$ !💣.txt", b"hello world")?;
