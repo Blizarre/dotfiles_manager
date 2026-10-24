@@ -35,7 +35,7 @@ impl Config {
         let _ = std::env::var("DOT_URL").map(|val| config.url = val);
 
         if config.url == String::default() {
-            bail!("Could not find the configuration file. You can set its location with --config-file or create it with the configure' command. You can also set DOT_REMOTE without a configuration file")
+            bail!("Could not find the configuration file. You can set its location with --config-file or create it with the configure' command. You can also set DOT_URL without a configuration file")
         }
         Ok(config)
     }
