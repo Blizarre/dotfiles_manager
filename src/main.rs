@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 use backend::Backend;
 use filetime::{self, set_file_times, FileTime};
@@ -42,16 +42,69 @@ struct Args {
     command: Commands,
 }
 
+#[derive(Clone, Debug, clap::Args)]
+struct TrackArgs {
+    /// Local filenames or directories
+    sources: Vec<PathBuf>,
+    /// Target file on the remote
+    #[arg(short, long)]
+    target: Option<String>,
+}
+
+struct NonEmpty<T>(Vec<T>);
+
+impl<T> NonEmpty<T> {
+    fn new(items: Vec<T>) -> Option<Self> {
+        (!items.is_empty()).then_some(Self(items))
+    }
+
+    fn into_vec(self) -> Vec<T> {
+        self.0
+    }
+}
+
+enum TrackRequest {
+    Targeted { source: PathBuf, target: String },
+    Collected { sources: NonEmpty<PathBuf> },
+}
+
+impl TryFrom<TrackArgs> for TrackRequest {
+    type Error = anyhow::Error;
+
+    fn try_from(args: TrackArgs) -> Result<Self> {
+        match args.target {
+            Some(target) => {
+                if args.sources.len() != 1 {
+                    bail!("The --target option requires exactly one source file");
+                }
+                let source = args
+                    .sources
+                    .into_iter()
+                    .next()
+                    .expect("the number of sources was checked above");
+                Ok(Self::Targeted { source, target })
+            }
+            None => Ok(Self::Collected {
+                sources: NonEmpty::new(args.sources)
+                    .context("At least one source file is required")?,
+            }),
+        }
+    }
+}
+
+fn parse_track_request(args: TrackArgs) -> Result<TrackRequest> {
+    TrackRequest::try_from(args).inspect_err(|_| {
+        let mut command = Args::command();
+        if let Some(track) = command.find_subcommand_mut("track") {
+            let _ = track.print_help();
+        }
+    })
+}
+
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// Add a new dotfile
-    Track {
-        /// Local filenames or directories
-        sources: Vec<PathBuf>,
-        /// Target file on the remote
-        #[arg(short, long)]
-        target: Option<String>,
-    },
+    Track(TrackArgs),
     /// Configure the Repository and create the configuration file. This can be skipped with environment variables
     Configure {
         /// Target URL (DOT_URL). Should contain scheme and authentication information if
@@ -74,6 +127,10 @@ fn main() -> Result<()> {
     if args.quiet && args.verbose {
         bail!("--quiet and --verbose cannot be used together");
     }
+    let track_request = match &args.command {
+        Commands::Track(track_args) => Some(parse_track_request(track_args.clone())?),
+        _ => None,
+    };
     let mut logger = env_logger::Builder::new();
     logger
         .filter_level(log::LevelFilter::Info)
@@ -127,7 +184,11 @@ fn main() -> Result<()> {
 
     match &args.command {
         Commands::Sync => sync(root_dir, &backend),
-        Commands::Track { sources, target } => track(sources, root_dir, target.clone(), &backend),
+        Commands::Track(_) => track(
+            track_request.expect("a track request is parsed for the track command"),
+            root_dir,
+            &backend,
+        ),
         Commands::Forget { target } => forget(root_dir, target, &backend),
         Commands::Configure { .. } => Ok(()),
         Commands::List => list(&backend),
@@ -177,59 +238,60 @@ fn visit_dirs(dir: &Path, cb: &mut dyn FnMut(&DirEntry)) -> Result<()> {
     Ok(())
 }
 
-fn track(
-    sources: &Vec<PathBuf>,
-    root_dir: &Path,
-    remote_path: Option<String>,
-    backend: &dyn Backend,
-) -> Result<()> {
-    let mut files: HashSet<PathBuf> = HashSet::new();
-
-    let root_path = Path::new(&root_dir)
-        .absolutize()
-        .context("Could not find the absolute location of the root path")?;
-
-    for source_path in sources {
-        let source_path = source_path
-            .absolutize()
-            .context("Could not find the absolute location of the input file")?;
-
-        if let Some(remote_path) = remote_path {
+fn track(request: TrackRequest, root_dir: &Path, backend: &dyn Backend) -> Result<()> {
+    match request {
+        TrackRequest::Targeted { source, target } => {
+            let source_path = source
+                .absolutize()
+                .context("Could not find the absolute location of the input file")?;
             if source_path.is_dir() {
-                bail!("The remote path can only be defined if there is a single source file")
+                bail!("The remote path can only be defined if the source is a single file")
             }
-            return upload_local_file(&source_path, &remote_path, backend);
+            upload_local_file(&source_path, &target, backend)
         }
+        TrackRequest::Collected { sources } => {
+            let mut files: HashSet<PathBuf> = HashSet::new();
 
-        if !source_path.starts_with(&root_path) {
-            bail!(
-                "Error, the file {} is not inside the root path {}",
-                source_path.display(),
-                root_path.display()
-            );
+            let root_path = Path::new(root_dir)
+                .absolutize()
+                .context("Could not find the absolute location of the root path")?;
+
+            for source_path in sources.into_vec() {
+                let source_path = source_path
+                    .absolutize()
+                    .context("Could not find the absolute location of the input file")?;
+
+                if !source_path.starts_with(&root_path) {
+                    bail!(
+                        "Error, the file {} is not inside the root path {}",
+                        source_path.display(),
+                        root_path.display()
+                    );
+                }
+
+                if source_path.is_dir() {
+                    visit_dirs(&source_path, &mut |f| {
+                        files.insert(f.path());
+                    })?;
+                } else {
+                    files.insert(source_path.to_path_buf());
+                };
+            }
+
+            for file in files {
+                let remote_path = file
+                    .strip_prefix(&root_path)
+                    .context("Error when trying to generate the path for the remote endpoint")?;
+
+                upload_local_file(
+                    &file,
+                    remote_path.to_str().context("Invalid remote path")?,
+                    backend,
+                )?
+            }
+            Ok(())
         }
-
-        if source_path.is_dir() {
-            visit_dirs(&source_path, &mut |f| {
-                files.insert(f.path());
-            })?;
-        } else {
-            files.insert(source_path.to_path_buf());
-        };
     }
-
-    for file in files {
-        let remote_path = file
-            .strip_prefix(&root_path)
-            .context("Error when trying to generate the path for the remote endpoint")?;
-
-        upload_local_file(
-            &file,
-            remote_path.to_str().context("Invalid remote path")?,
-            backend,
-        )?
-    }
-    Ok(())
 }
 
 fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
