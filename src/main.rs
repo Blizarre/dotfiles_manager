@@ -272,7 +272,7 @@ fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
                     file.key,
                     patch_fmt.fmt_patch(&patch)
                 );
-                let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"]);
+                let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"])?;
                 match response.as_str() {
                     "u" => upload_local_file(&local, &file.key, backend)?,
                     "o" => replace_local_file(&local, &content, file.last_modified)?,
@@ -309,13 +309,18 @@ fn replace_local_file(path: &Path, content: &[u8], modified_time: OffsetDateTime
         .context("Error when updating the time for the downloaded file")
 }
 
-fn ask_user(prompt: &str, accepted_values: Vec<&str>) -> String {
+fn ask_user(prompt: &str, accepted_values: Vec<&str>) -> Result<String> {
     print!("{}", prompt);
-    let mut line = String::new();
-    while !accepted_values.contains(&line.trim()) {
+    loop {
         print!("input [{}]: ", accepted_values.join(", "));
         std::io::stdout().flush().unwrap_or_default();
-        std::io::stdin().read_line(&mut line).unwrap();
+        let mut line = String::new();
+        if std::io::stdin().read_line(&mut line)? == 0 {
+            bail!("No input provided");
+        }
+        let line = line.trim();
+        if accepted_values.contains(&line) {
+            return Ok(line.to_owned());
+        }
     }
-    line.trim().to_owned()
 }
