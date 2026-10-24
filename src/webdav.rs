@@ -105,41 +105,37 @@ impl Webdav {
                             namespace: _,
                             prefix: _,
                         },
-                } => {
-                    if in_response {
-                        match local_name.as_str() {
-                            "href" => {
-                                href = value.take();
-                            }
-                            "getlastmodified" => {
-                                lastmodified = Some(OffsetDateTime::parse(
-                                    &value.take().ok_or(anyhow!(
-                                        "invalid data returned by the server, getlastmodified value missing"
-                                    ))?,
-                                    &well_known::Rfc2822,
-                                )?);
-                            }
-                            "response" => {
-                                let href = href.take().ok_or(anyhow!(
-                                    "invalid data returned by the server, href field missing"
-                                ))?;
-                                let href = IriRefBuf::new(href)?;
-                                let href_uri = href.resolved(collection);
-                                let thing = href_uri.relative_to(&base_iri).to_string();
-                                let thing = PctString::new(thing)?.decode();
-                                let is_collection = thing.ends_with("/") || thing.is_empty();
-                                entries.push(RemoteEntry {
-                                    uri: href_uri,
-                                    key: thing.to_string(),
-                                    last_modified: lastmodified.take(),
-                                    is_collection,
-                                });
-                                in_response = false;
-                            }
-                            _ => {}
-                        }
+                } if in_response => match local_name.as_str() {
+                    "href" => {
+                        href = value.take();
                     }
-                }
+                    "getlastmodified" => {
+                        lastmodified = Some(OffsetDateTime::parse(
+                                &value.take().ok_or(anyhow!(
+                                    "invalid data returned by the server, getlastmodified value missing"
+                                ))?,
+                                &well_known::Rfc2822,
+                            )?);
+                    }
+                    "response" => {
+                        let href = href.take().ok_or(anyhow!(
+                            "invalid data returned by the server, href field missing"
+                        ))?;
+                        let href = IriRefBuf::new(href)?;
+                        let href_uri = href.resolved(collection);
+                        let thing = href_uri.relative_to(&base_iri).to_string();
+                        let thing = PctString::new(thing)?.decode();
+                        let is_collection = thing.ends_with("/") || thing.is_empty();
+                        entries.push(RemoteEntry {
+                            uri: href_uri,
+                            key: thing.to_string(),
+                            last_modified: lastmodified.take(),
+                            is_collection,
+                        });
+                        in_response = false;
+                    }
+                    _ => {}
+                },
                 _ => {}
             }
         }

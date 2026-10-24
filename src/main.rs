@@ -305,7 +305,7 @@ fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
         let local = root_dir.join(Path::new(&file.key));
         let content = backend
             .get(&file.key)
-            .with_context(|| format!("Could not retrieve file {}", &file.key))?;
+            .with_context(|| format!("Could not retrieve file {}", file.key))?;
 
         if local.exists() {
             debug!("    Found matching local file: {}", local.display());
