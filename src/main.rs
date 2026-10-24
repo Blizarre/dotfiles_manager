@@ -15,7 +15,7 @@ use std::{
 
 use time::OffsetDateTime;
 
-use diffy::{self, PatchFormatter};
+use diffy::{DiffOptions, PatchFormatter};
 
 mod backend;
 mod config;
@@ -324,16 +324,16 @@ fn sync(root_dir: &Path, backend: &dyn Backend) -> Result<()> {
                 .context("Error reading the content of the local file")?;
             let content_text = &String::from_utf8(content.clone())
                 .context("The remote file is not a text file")?;
-            let patch = diffy::create_patch(&local_content, content_text);
+            let mut options = DiffOptions::new();
+            options
+                .set_original_filename("local")
+                .set_modified_filename("remote");
+            let patch = options.create_patch(&local_content, content_text);
             if patch.hunks().is_empty() {
                 info!("    Identical content, skipping: {}", file.key);
             } else {
                 let patch_fmt = PatchFormatter::new().with_color();
-                info!(
-                    "    {} - Original is local, Modified is remote:\n{}",
-                    file.key,
-                    patch_fmt.fmt_patch(&patch)
-                );
+                info!("    {}:\n{}", file.key, patch_fmt.fmt_patch(&patch));
                 let response = ask_user("Upload (u) local version, Overwrite (o) local version with remote, Skip (s) this file, or Exit (e)", vec!["u", "o", "s", "e"])?;
                 match response.as_str() {
                     "u" => upload_local_file(&local, &file.key, backend)?,

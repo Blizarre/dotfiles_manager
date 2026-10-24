@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.75"
 clap = { version = "4.4.6", features = ["derive"] }
-diffy = "0.3.0"
+diffy = { version = "0.5", features = ["color"] }
 filetime = "0.2.22"
 home = "0.5.5"
 log = "0.4.20"
